@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f4f0e8" />
+    <title>SEARCH / 01 - 검색 엔진 구현 계획</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="poster">
+      <header class="masthead reveal">
+        <p class="eyebrow"><span class="signal"></span> KNOWLEDGE INFRASTRUCTURE / MVP BLUEPRINT</p>
+        <p class="issue">PROJECT 01<br />2026</p>
+      </header>
+
+      <section class="hero reveal">
+        <div>
+          <p class="kicker">지정 웹사이트를 위한</p>
+          <h1>검색 엔진<br /><em>구현 계획</em></h1>
+        </div>
+        <aside class="hero-note">
+          <span>THE PREMISE</span>
+          <p>웹을 단순히 읽지 않고,<br />구조와 관계로 탐색한다.</p>
+        </aside>
+      </section>
+
+      <section class="pipeline reveal" aria-label="검색 엔진 처리 흐름">
+        <div class="section-label">01 / ENGINE FLOW</div>
+        <div class="flow">
+          <article class="flow-step coral"><span>01</span><h2>수집</h2><p>crawl</p></article>
+          <i class="arrow">→</i>
+          <article class="flow-step blue"><span>02</span><h2>정제</h2><p>extract</p></article>
+          <i class="arrow">→</i>
+          <article class="flow-step yellow"><span>03</span><h2>색인</h2><p>index</p></article>
+          <i class="arrow">→</i>
+          <article class="flow-step green"><span>04</span><h2>탐색</h2><p>query</p></article>
+        </div>
+        <p class="flow-caption">문서 수집 → 텍스트 정제 → 역색인 → 검색·순위화</p>
+      </section>
+
+      <section class="content-grid">
+        <article class="card architecture reveal">
+          <div class="card-head"><p>02 / ARCHITECTURE</p><span>초기 기술 스택</span></div>
+          <div class="stack">
+            <div><b>INTERFACE</b><strong>React <small>+ TypeScript</small></strong></div>
+            <div><b>API</b><strong>FastAPI <small>+ Python</small></strong></div>
+            <div><b>SEARCH</b><strong>SQLite FTS5 <small>→ Meilisearch</small></strong></div>
+            <div><b>DATA</b><strong>SQLite <small>→ PostgreSQL</small></strong></div>
+          </div>
+          <p class="card-foot">가볍게 시작하고, 데이터가 자라면 분리한다.</p>
+        </article>
+
+        <article class="card logic reveal">
+          <div class="card-head"><p>03 / QUERY LOGIC</p><span>부울 검색</span></div>
+          <div class="query">(<mark>AI</mark> <b>OR</b> <mark>머신러닝</mark>)<br /><b>AND</b> <mark>논문</mark> <b>NOT</b> <mark class="muted">광고</mark></div>
+          <div class="logic-key"><span><i class="dot ai"></i>포함</span><span><i class="dot op"></i>연산자</span><span><i class="dot off"></i>제외</span></div>
+          <p class="card-foot">괄호, 구문 검색, 자동완성까지 확장 가능</p>
+        </article>
+
+        <article class="card map reveal">
+          <div class="card-head"><p>04 / LINK GRAPH</p><span>관계 지도</span></div>
+          <svg viewBox="0 0 460 205" role="img" aria-label="문서 링크 그래프">
+            <path d="M74 109 L184 51 L238 110 L374 54 M184 51 L364 150 M238 110 L364 150 M74 109 L160 159" />
+            <circle class="node node-main" cx="74" cy="109" r="27" /><circle class="node node-a" cx="184" cy="51" r="20" /><circle class="node node-b" cx="238" cy="110" r="16" /><circle class="node node-c" cx="374" cy="54" r="24" /><circle class="node node-d" cx="364" cy="150" r="18" /><circle class="node node-e" cx="160" cy="159" r="12" />
+            <text x="74" y="114">A</text><text x="184" y="56">B</text><text x="238" y="115">C</text><text x="374" y="59">D</text><text x="364" y="155">E</text><text x="160" y="164">F</text>
+          </svg>
+          <p class="card-foot">하이퍼링크를 연결해 관련 문서와 권위도를 발견</p>
+        </article>
+
+        <article class="card model reveal">
+          <div class="card-head"><p>05 / FOUR LENSES</p><span>웹을 보는 네 가지 방식</span></div>
+          <div class="lenses">
+            <div><span class="lens-icon fn">ƒ</span><b>함수</b><p>변환·자동화 규칙</p></div>
+            <div><span class="lens-icon graph">●—●</span><b>그래프</b><p>링크·추천 관계</p></div>
+            <div><span class="lens-icon tree">⌜┬</span><b>트리</b><p>목차·문서 구조</p></div>
+            <div><span class="lens-icon bool">∧∨¬</span><b>부울</b><p>검색·필터 조건</p></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="roadmap reveal">
+        <div class="section-label">06 / MVP MILESTONES</div>
+        <ol>
+          <li><span>WEEK 01</span><b>수집 기반</b><p>URL 등록 · robots.txt · 중복 제거</p></li>
+          <li><span>WEEK 02</span><b>검색 기반</b><p>문서 저장 · FTS 색인 · 결과 화면</p></li>
+          <li><span>WEEK 03</span><b>논리 질의</b><p>AND / OR / NOT · 랭킹 · 스니펫</p></li>
+          <li><span>WEEK 04</span><b>구조 탐색</b><p>목차 트리 · 링크 그래프 · 관리자</p></li>
+        </ol>
+      </section>
+
+      <footer class="footer reveal">
+        <p><b>MVP DONE WHEN</b> 지정 사이트 수집 · 부울 검색 · 원문 링크 · 구조 탐색</p>
+        <p>SEARCH AS STRUCTURE, NOT JUST RESULTS. <span>↗</span></p>
+      </footer>
+    </main>
+  </body>
+</html>
