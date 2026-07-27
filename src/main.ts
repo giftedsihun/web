@@ -6,6 +6,8 @@ import { DatabaseSync } from "node:sqlite";
 type LinkItem = { title: string; url: string };
 type IndexedDocument = { title: string; url: string; text: string; headings: string[]; links: LinkItem[]; indexedAt: string };
 type SavedState = { bookmarks: Bookmark[]; history: HistoryItem[]; documents: IndexedDocument[] };
+type SessionTab = { title: string; url: string; closedAt?: string };
+type TabSession = { tabs: SessionTab[]; activeUrl: string; recentlyClosed: SessionTab[] };
 type Bookmark = { title: string; url: string; createdAt: string };
 type HistoryItem = { title: string; url: string; visitedAt: string };
 type GraphDocument = { title: string; url: string; indexedAt: string; links: LinkItem[] };
@@ -23,6 +25,22 @@ const loadState = (): SavedState => {
   catch { return { bookmarks: [], history: [], documents: [] }; }
 };
 const saveState = (state: SavedState) => writeFileSync(statePath(), JSON.stringify(state, null, 2));
+const sessionPath = () => join(app.getPath("userData"), "atlas-tabs.json");
+const emptySession = (): TabSession => ({ tabs: [], activeUrl: "", recentlyClosed: [] });
+const loadSession = (): TabSession => {
+  try {
+    const saved = JSON.parse(readFileSync(sessionPath(), "utf8")) as Partial<TabSession>;
+    return {
+      tabs: Array.isArray(saved.tabs) ? saved.tabs.filter((tab): tab is SessionTab => !!tab && typeof tab.url === "string" && typeof tab.title === "string").slice(0, 20) : [],
+      activeUrl: typeof saved.activeUrl === "string" ? saved.activeUrl : "",
+      recentlyClosed: Array.isArray(saved.recentlyClosed) ? saved.recentlyClosed.filter((tab): tab is SessionTab => !!tab && typeof tab.url === "string" && typeof tab.title === "string").slice(0, 20) : []
+    };
+  } catch { return emptySession(); }
+};
+const saveSession = (session: TabSession) => writeFileSync(sessionPath(), JSON.stringify({
+  tabs: session.tabs.slice(0, 20), activeUrl: session.activeUrl,
+  recentlyClosed: session.recentlyClosed.slice(0, 20)
+}, null, 2));
 
 function initializeSearchIndex() {
   database = new DatabaseSync(join(app.getPath("userData"), "atlas-search.sqlite"));
@@ -149,6 +167,8 @@ function createWindow() {
 app.whenReady().then(() => {
   initializeSearchIndex();
   ipcMain.handle("state:load", () => loadState());
+  ipcMain.handle("session:load", () => loadSession());
+  ipcMain.handle("session:save", (_event, session: TabSession) => saveSession(session));
   ipcMain.handle("bookmark:toggle", (_event, bookmark: Bookmark) => {
     const state = loadState();
     const index = state.bookmarks.findIndex((item) => item.url === bookmark.url);

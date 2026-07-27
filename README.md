@@ -11,7 +11,7 @@ npm start
 
 ## Included
 
-- Tabs, address/search bar, back, forward, and reload controls
+- Persistent tab sessions, recently closed-tab restore (`Ctrl+Shift+T`), address/search bar, back, forward, and reload controls
 - Local bookmarks and history stored in Electron's user-data directory
 - Page heading outline and clickable SVG link graph built from indexed pages
 - SQLite FTS5 local index with `AND`, `OR`, `NOT`, parentheses, and phrase search
