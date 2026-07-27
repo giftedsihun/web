@@ -13,5 +13,6 @@ npm start
 
 - Tabs, address/search bar, back, forward, and reload controls
 - Local bookmarks and history stored in Electron's user-data directory
-- Page heading outline, a link-graph concept view, and session status
+- Page heading outline and clickable SVG link graph built from indexed pages
+- SQLite FTS5 local index with `AND`, `OR`, `NOT`, parentheses, and phrase search
 - Keyboard shortcuts: `Ctrl+L` address bar and `Ctrl+T` new tab

@@ -2,3 +2,11 @@
 #local-search input { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--ink); background: #fffdf6; font: 11px "DM Mono", monospace; }
 #local-search button { padding: 0 9px; border: 1px solid var(--ink); background: var(--yellow); font: 500 10px "DM Mono", monospace; cursor: pointer; }
 #search-results .help { margin-top: 12px; }
+.graph-help { margin-bottom: 9px; }
+.graph-canvas { display: block; width: 100%; height: 230px; margin: 8px 0 12px; border: 1px solid var(--line); background: #fffdf6; }
+.graph-edge { stroke: #b9afa0; stroke-width: 1.2; opacity: .8; }
+.graph-node { fill: var(--yellow); stroke: var(--ink); stroke-width: 1.4; cursor: pointer; }
+.graph-node.current { fill: #ef8067; }
+.graph-node.target { fill: #a7cbb9; }
+.graph-label { font: 500 8px "DM Mono", monospace; fill: var(--ink); pointer-events: none; }
+.graph-canvas .graph-node:hover { stroke-width: 2.6; }
