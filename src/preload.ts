@@ -7,5 +7,7 @@ contextBridge.exposeInMainWorld("browserStore", {
   indexDocument: (document: { title: string; url: string; text: string; headings: string[]; links: Array<{ title: string; url: string }>; indexedAt: string }) => ipcRenderer.invoke("document:index", document),
   documentCount: () => ipcRenderer.invoke("document:count"),
   graph: () => ipcRenderer.invoke("document:graph"),
-  search: (query: string) => ipcRenderer.invoke("document:search", query)
+  search: (query: string) => ipcRenderer.invoke("document:search", query),
+  notes: () => ipcRenderer.invoke("notes:list"),
+  saveNote: (note: { quote: string; body: string; tags: string[]; sourceUrl: string; sourceTitle: string }) => ipcRenderer.invoke("notes:save", note)
 });

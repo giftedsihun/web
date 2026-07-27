@@ -9,7 +9,10 @@ type SavedState = { bookmarks: Bookmark[]; history: HistoryItem[]; documents: In
 type Bookmark = { title: string; url: string; createdAt: string };
 type HistoryItem = { title: string; url: string; visitedAt: string };
 type GraphDocument = { title: string; url: string; indexedAt: string; links: LinkItem[] };
-type SearchResult = { title: string; url: string; headings: string[]; indexedAt: string };
+type Note = { id: number; quote: string; body: string; tags: string[]; sourceUrl: string; sourceTitle: string; createdAt: string };
+type NoteInput = Omit<Note, "id" | "createdAt">;
+type GraphData = { documents: GraphDocument[]; notes: Note[] };
+type SearchResult = { kind: "document"; title: string; url: string; headings: string[]; indexedAt: string } | { kind: "note"; id: number; title: string; url: string; quote: string; body: string; tags: string[]; indexedAt: string };
 
 let database: DatabaseSync;
 
@@ -34,6 +37,17 @@ function initializeSearchIndex() {
     CREATE VIRTUAL TABLE IF NOT EXISTS document_search USING fts5(
       url UNINDEXED, title, headings, text
     );
+    CREATE TABLE IF NOT EXISTS notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, quote TEXT NOT NULL, body TEXT NOT NULL,
+      source_url TEXT NOT NULL, source_title TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS note_tags (
+      note_id INTEGER NOT NULL, tag TEXT NOT NULL,
+      PRIMARY KEY (note_id, tag)
+    );
+    CREATE VIRTUAL TABLE IF NOT EXISTS note_search USING fts5(
+      note_id UNINDEXED, quote, body, tags
+    );
   `);
 
   // Preserve documents collected by earlier JSON-backed Atlas versions.
@@ -53,22 +67,51 @@ function indexDocument(document: IndexedDocument) {
 }
 
 const documentCount = () => (database.prepare("SELECT count(*) AS count FROM documents").get() as { count: number }).count;
-const getGraphDocuments = (): GraphDocument[] => {
+const getGraphData = (): GraphData => {
   const documents = database.prepare("SELECT title, url, indexed_at AS indexedAt FROM documents ORDER BY indexed_at DESC LIMIT 100").all() as unknown as GraphDocument[];
   const links = database.prepare("SELECT source_url AS sourceUrl, target_url AS url, title FROM document_links").all() as Array<{ sourceUrl: string; url: string; title: string }>;
-  return documents.map((document) => ({ ...document, links: links.filter((link) => link.sourceUrl === document.url).map(({ url, title }) => ({ url, title })) }));
+  return { documents: documents.map((document) => ({ ...document, links: links.filter((link) => link.sourceUrl === document.url).map(({ url, title }) => ({ url, title })) })), notes: getNotes() };
 };
+
+function getNotes(): Note[] {
+  const notes = database.prepare("SELECT id, quote, body, source_url AS sourceUrl, source_title AS sourceTitle, created_at AS createdAt FROM notes ORDER BY created_at DESC LIMIT 100").all() as unknown as Array<Omit<Note, "tags">>;
+  const tags = database.prepare("SELECT note_id AS noteId, tag FROM note_tags ORDER BY tag").all() as Array<{ noteId: number; tag: string }>;
+  return notes.map((note) => ({ ...note, tags: tags.filter((tag) => tag.noteId === note.id).map((tag) => tag.tag) }));
+}
+
+function saveNote(input: NoteInput): Note {
+  const quote = input.quote.trim().slice(0, 3000);
+  const body = input.body.trim().slice(0, 5000);
+  if (!quote) throw new Error("A selected quote is required.");
+  const createdAt = new Date().toISOString();
+  database.prepare("INSERT INTO notes (quote, body, source_url, source_title, created_at) VALUES (?, ?, ?, ?, ?)").run(quote, body, input.sourceUrl, input.sourceTitle.slice(0, 300), createdAt);
+  const id = (database.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id;
+  const tags = [...new Set(input.tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean))].slice(0, 12);
+  const insertTag = database.prepare("INSERT OR IGNORE INTO note_tags (note_id, tag) VALUES (?, ?)");
+  tags.forEach((tag) => insertTag.run(id, tag));
+  database.prepare("INSERT INTO note_search (note_id, quote, body, tags) VALUES (?, ?, ?, ?)").run(id, quote, body, tags.join(" "));
+  return { id, quote, body, tags, sourceUrl: input.sourceUrl, sourceTitle: input.sourceTitle, createdAt };
+}
 
 function searchDocuments(query: string): { results: SearchResult[]; error?: string } {
   if (!query.trim()) return { results: [] };
   try {
-    const results = database.prepare(`
+    const documentResults = database.prepare(`
       SELECT d.title, d.url, d.headings, d.indexed_at AS indexedAt
       FROM document_search search JOIN documents d ON d.url = search.url
       WHERE document_search MATCH ?
       ORDER BY bm25(document_search), d.indexed_at DESC LIMIT 50
-    `).all(query) as Array<SearchResult & { headings: string }>;
-    return { results: results.map((item) => ({ ...item, headings: JSON.parse(item.headings) as string[] })) };
+    `).all(query) as Array<{ title: string; url: string; headings: string; indexedAt: string }>;
+    const noteResults = database.prepare(`
+      SELECT n.id, n.quote, n.body, n.source_url AS url, n.source_title AS title, n.created_at AS indexedAt
+      FROM note_search search JOIN notes n ON n.id = search.note_id
+      WHERE note_search MATCH ? ORDER BY bm25(note_search), n.created_at DESC LIMIT 50
+    `).all(query) as Array<{ id: number; quote: string; body: string; title: string; url: string; indexedAt: string }>;
+    const noteTags = database.prepare("SELECT note_id AS noteId, tag FROM note_tags").all() as Array<{ noteId: number; tag: string }>;
+    return { results: [
+      ...documentResults.map((item) => ({ kind: "document" as const, ...item, headings: JSON.parse(item.headings) as string[] })),
+      ...noteResults.map((item) => ({ kind: "note" as const, ...item, tags: noteTags.filter((tag) => tag.noteId === item.id).map((tag) => tag.tag) }))
+    ] };
   } catch { return { results: [], error: "검색식 형식을 확인하세요. AND, OR, NOT, 괄호, 따옴표를 사용할 수 있습니다." }; }
 }
 
@@ -100,8 +143,10 @@ app.whenReady().then(() => {
     return indexDocument(document);
   });
   ipcMain.handle("document:count", () => documentCount());
-  ipcMain.handle("document:graph", () => getGraphDocuments());
+  ipcMain.handle("document:graph", () => getGraphData());
   ipcMain.handle("document:search", (_event, query: string) => searchDocuments(query));
+  ipcMain.handle("notes:list", () => getNotes());
+  ipcMain.handle("notes:save", (_event, note: NoteInput) => saveNote(note));
   createWindow();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
