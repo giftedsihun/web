@@ -2,6 +2,8 @@
 
 Electron and TypeScript browser MVP that uses Chromium's `webview` for navigation.
 
+Korean implementation status, architecture, limitations, and roadmap: [ATLAS_OVERVIEW_KO.md](ATLAS_OVERVIEW_KO.md)
+
 ## Run
 
 ```powershell
