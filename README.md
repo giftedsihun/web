@@ -16,4 +16,5 @@ npm start
 - Page heading outline and clickable SVG link graph built from indexed pages
 - SQLite FTS5 local index with `AND`, `OR`, `NOT`, parentheses, and phrase search
 - Selected-text knowledge notes with personal annotations, tags, unified search, and graph links
+- Note editing, deletion, and tag filters for managing a growing knowledge collection
 - Keyboard shortcuts: `Ctrl+L` address bar and `Ctrl+T` new tab

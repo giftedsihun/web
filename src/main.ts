@@ -11,6 +11,7 @@ type HistoryItem = { title: string; url: string; visitedAt: string };
 type GraphDocument = { title: string; url: string; indexedAt: string; links: LinkItem[] };
 type Note = { id: number; quote: string; body: string; tags: string[]; sourceUrl: string; sourceTitle: string; createdAt: string };
 type NoteInput = Omit<Note, "id" | "createdAt">;
+type NoteUpdate = Pick<Note, "id" | "body" | "tags">;
 type GraphData = { documents: GraphDocument[]; notes: Note[] };
 type SearchResult = { kind: "document"; title: string; url: string; headings: string[]; indexedAt: string } | { kind: "note"; id: number; title: string; url: string; quote: string; body: string; tags: string[]; indexedAt: string };
 
@@ -93,6 +94,26 @@ function saveNote(input: NoteInput): Note {
   return { id, quote, body, tags, sourceUrl: input.sourceUrl, sourceTitle: input.sourceTitle, createdAt };
 }
 
+function updateNote(input: NoteUpdate): Note {
+  const existing = getNotes().find((note) => note.id === input.id);
+  if (!existing) throw new Error("Note not found.");
+  const body = input.body.trim().slice(0, 5000);
+  const tags = [...new Set(input.tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean))].slice(0, 12);
+  database.prepare("UPDATE notes SET body = ? WHERE id = ?").run(body, input.id);
+  database.prepare("DELETE FROM note_tags WHERE note_id = ?").run(input.id);
+  database.prepare("DELETE FROM note_search WHERE note_id = ?").run(input.id);
+  const insertTag = database.prepare("INSERT OR IGNORE INTO note_tags (note_id, tag) VALUES (?, ?)");
+  tags.forEach((tag) => insertTag.run(input.id, tag));
+  database.prepare("INSERT INTO note_search (note_id, quote, body, tags) VALUES (?, ?, ?, ?)").run(input.id, existing.quote, body, tags.join(" "));
+  return { ...existing, body, tags };
+}
+
+function deleteNote(id: number) {
+  database.prepare("DELETE FROM note_tags WHERE note_id = ?").run(id);
+  database.prepare("DELETE FROM note_search WHERE note_id = ?").run(id);
+  database.prepare("DELETE FROM notes WHERE id = ?").run(id);
+}
+
 function searchDocuments(query: string): { results: SearchResult[]; error?: string } {
   if (!query.trim()) return { results: [] };
   try {
@@ -147,6 +168,8 @@ app.whenReady().then(() => {
   ipcMain.handle("document:search", (_event, query: string) => searchDocuments(query));
   ipcMain.handle("notes:list", () => getNotes());
   ipcMain.handle("notes:save", (_event, note: NoteInput) => saveNote(note));
+  ipcMain.handle("notes:update", (_event, note: NoteUpdate) => updateNote(note));
+  ipcMain.handle("notes:delete", (_event, id: number) => deleteNote(id));
   createWindow();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
