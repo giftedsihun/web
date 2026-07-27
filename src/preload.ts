@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("browserStore", {
   documentCount: () => ipcRenderer.invoke("document:count"),
   graph: () => ipcRenderer.invoke("document:graph"),
   search: (query: string) => ipcRenderer.invoke("document:search", query),
+  crawl: (request: { url: string; maxPages?: number; sameHost?: boolean }) => ipcRenderer.invoke("crawler:start", request),
   notes: () => ipcRenderer.invoke("notes:list"),
   saveNote: (note: { quote: string; body: string; tags: string[]; sourceUrl: string; sourceTitle: string }) => ipcRenderer.invoke("notes:save", note),
   updateNote: (note: { id: number; body: string; tags: string[] }) => ipcRenderer.invoke("notes:update", note),

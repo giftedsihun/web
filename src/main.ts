@@ -16,6 +16,8 @@ type NoteInput = Omit<Note, "id" | "createdAt">;
 type NoteUpdate = Pick<Note, "id" | "body" | "tags">;
 type GraphData = { documents: GraphDocument[]; notes: Note[] };
 type SearchResult = { kind: "document"; title: string; url: string; headings: string[]; indexedAt: string } | { kind: "note"; id: number; title: string; url: string; quote: string; body: string; tags: string[]; indexedAt: string };
+type CrawlRequest = { url: string; maxPages?: number; sameHost?: boolean };
+type CrawlResult = { indexed: number; skipped: number; failed: number; message: string };
 
 let database: DatabaseSync;
 
@@ -83,6 +85,61 @@ function indexDocument(document: IndexedDocument) {
   const insertLink = database.prepare("INSERT OR IGNORE INTO document_links (source_url, target_url, title) VALUES (?, ?, ?)");
   document.links.slice(0, 40).forEach((link) => insertLink.run(document.url, link.url, link.title));
   return documentCount();
+}
+
+const decodeHtml = (value: string) => value.replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, "\"").replace(/&#39;/gi, "'");
+const textFromHtml = (value: string) => decodeHtml(value.replace(/<script\b[^>]*>[\s\S]*?<\/script>|<style\b[^>]*>[\s\S]*?<\/style>|<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+const canonicalUrl = (value: string) => { const url = new URL(value); url.hash = ""; return url.toString(); };
+
+function extractCrawlDocument(url: string, html: string): IndexedDocument {
+  const title = textFromHtml(html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1] || new URL(url).hostname).slice(0, 300);
+  const headings = [...html.matchAll(/<h([1-3])\b[^>]*>([\s\S]*?)<\/h\1>/gi)].map((match) => textFromHtml(match[2]).slice(0, 300)).filter(Boolean).slice(0, 35);
+  const links: LinkItem[] = [];
+  for (const match of html.matchAll(/<a\b[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    try {
+      const target = canonicalUrl(new URL(match[1], url).toString());
+      if (/^https?:$/i.test(new URL(target).protocol)) links.push({ url: target, title: textFromHtml(match[2]).slice(0, 90) || target });
+    } catch { /* Ignore malformed links. */ }
+  }
+  return { title, url, headings, links: links.filter((link, index) => links.findIndex((item) => item.url === link.url) === index).slice(0, 40), text: textFromHtml(html).slice(0, 12000), indexedAt: new Date().toISOString() };
+}
+
+async function allowedByRobots(url: URL, cache: Map<string, string>) {
+  const origin = url.origin;
+  if (!cache.has(origin)) {
+    try { cache.set(origin, await (await fetch(`${origin}/robots.txt`, { headers: { "User-Agent": "AtlasBrowser/1.0" }, signal: AbortSignal.timeout(5000) })).text()); }
+    catch { cache.set(origin, ""); }
+  }
+  const rules = cache.get(origin) || "";
+  const groups = rules.split(/\n\s*\n/).filter((group) => /user-agent\s*:\s*\*/i.test(group));
+  const disallowed = groups.flatMap((group) => [...group.matchAll(/^\s*disallow\s*:\s*(\S+)/gim)].map((match) => match[1])).filter(Boolean);
+  return !disallowed.some((path) => url.pathname.startsWith(path));
+}
+
+async function crawlSite(request: CrawlRequest): Promise<CrawlResult> {
+  let seed: URL;
+  try { seed = new URL(request.url); } catch { return { indexed: 0, skipped: 0, failed: 0, message: "유효한 시작 주소를 입력하세요." }; }
+  if (!/^https?:$/.test(seed.protocol)) return { indexed: 0, skipped: 0, failed: 0, message: "HTTP 또는 HTTPS 주소만 크롤링할 수 있습니다." };
+  const maxPages = Math.min(Math.max(Math.floor(request.maxPages || 10), 1), 50);
+  const queue = [canonicalUrl(seed.toString())]; const seen = new Set<string>(); const robots = new Map<string, string>();
+  let indexed = 0; let skipped = 0; let failed = 0;
+  while (queue.length && seen.size < maxPages) {
+    const next = queue.shift() as string; if (seen.has(next)) continue; seen.add(next);
+    try {
+      const page = new URL(next);
+      if (request.sameHost !== false && page.host !== seed.host) { skipped++; continue; }
+      if (!await allowedByRobots(page, robots)) { skipped++; continue; }
+      const response = await fetch(next, { redirect: "follow", headers: { "User-Agent": "AtlasBrowser/1.0 (+local knowledge index)" }, signal: AbortSignal.timeout(10000) });
+      if (!response.ok || !response.headers.get("content-type")?.includes("text/html")) { skipped++; continue; }
+      const finalUrl = new URL(response.url);
+      if (request.sameHost !== false && finalUrl.host !== seed.host) { skipped++; continue; }
+      const document = extractCrawlDocument(canonicalUrl(response.url), await response.text());
+      indexDocument(document); indexed++;
+      document.links.forEach((link) => { if (!seen.has(link.url) && (!request.sameHost || new URL(link.url).host === seed.host) && queue.length < maxPages * 4) queue.push(link.url); });
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    } catch { failed++; }
+  }
+  return { indexed, skipped, failed, message: `${indexed}개 페이지를 색인했습니다${skipped ? ` · ${skipped}개 건너뜀` : ""}${failed ? ` · ${failed}개 실패` : ""}.` };
 }
 
 const documentCount = () => (database.prepare("SELECT count(*) AS count FROM documents").get() as { count: number }).count;
@@ -186,6 +243,7 @@ app.whenReady().then(() => {
   ipcMain.handle("document:count", () => documentCount());
   ipcMain.handle("document:graph", () => getGraphData());
   ipcMain.handle("document:search", (_event, query: string) => searchDocuments(query));
+  ipcMain.handle("crawler:start", (_event, request: CrawlRequest) => crawlSite(request));
   ipcMain.handle("notes:list", () => getNotes());
   ipcMain.handle("notes:save", (_event, note: NoteInput) => saveNote(note));
   ipcMain.handle("notes:update", (_event, note: NoteUpdate) => updateNote(note));

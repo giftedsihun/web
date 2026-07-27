@@ -1,4 +1,6 @@
 #local-search { display: flex; gap: 5px; margin-bottom: 10px; }
+.crawler-form { display: grid; grid-template-columns: 1fr 52px auto; gap: 6px; margin-bottom: 14px; padding: 9px; border: 1px solid var(--ink); background: #f5eecf; }
+.crawler-form div { grid-column: 1 / -1; }.crawler-form b, .crawler-form small { display: block; }.crawler-form b { font: 600 11px "DM Mono", monospace; }.crawler-form small { margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.35; }.crawler-form > input, .crawler-form label input { min-width: 0; padding: 7px; border: 1px solid var(--line); background: #fffdf6; font: 10px "DM Mono", monospace; }.crawler-form label { font: 9px "DM Mono", monospace; }.crawler-form label input { width: 100%; margin-top: 2px; }.crawler-form button { border: 1px solid var(--ink); background: var(--green); font: 600 11px "IBM Plex Sans KR", sans-serif; cursor: pointer; }.crawler-form button:disabled { opacity: .55; cursor: wait; }.crawler-form .help { grid-column: 1 / -1; margin: 1px 0 0; }
 .restore-tab { height: 36px; width: 30px; flex: 0 0 30px; border: 0; background: transparent; color: var(--ink); font: 19px "Space Grotesk", sans-serif; cursor: pointer; }
 .restore-tab:hover:not(:disabled) { background: var(--yellow); }
 .restore-tab:disabled { color: var(--line); cursor: default; }

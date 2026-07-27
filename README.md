@@ -15,6 +15,7 @@ npm start
 - Local bookmarks and history stored in Electron's user-data directory
 - Page heading outline and clickable SVG link graph built from indexed pages
 - SQLite FTS5 local index with `AND`, `OR`, `NOT`, parentheses, and phrase search
+- Bounded, robots.txt-aware same-domain web crawler that adds up to 50 linked HTML pages to the local index
 - Selected-text knowledge notes with personal annotations, tags, unified search, and graph links
 - Note editing, deletion, and tag filters for managing a growing knowledge collection
 - Keyboard shortcuts: `Ctrl+L` address bar and `Ctrl+T` new tab
