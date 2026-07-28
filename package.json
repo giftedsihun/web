@@ -1,29 +1,55 @@
 {
-  "name": "web",
+  "name": "atlas-browser",
   "version": "1.0.0",
-  "description": "",
+  "description": "A local-first knowledge browser for mapping the web.",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc",
+    "build": "npm run build:main && npm run build:renderer && npm run build:public-search",
+    "build:main": "tsc -p tsconfig.json",
+    "build:renderer": "tsc -p tsconfig.renderer.json",
+    "build:public-search": "tsc -p public-search/tsconfig.json",
     "start": "npm run build && electron .",
-    "dev": "npm run build && electron ."
+    "dev": "npm run build && electron .",
+    "test": "npm run build && node --test test/*.test.mjs public-search/test/*.test.mjs",
+    "public-search": "npm run build:public-search && node dist/public-search/server.js",
+    "package": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/giftedsihun/web.git"
   },
   "keywords": [],
-  "author": "",
+  "author": "giftedsihun",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/giftedsihun/web/issues"
   },
   "homepage": "https://github.com/giftedsihun/web#readme",
-  "dependencies": {
-    "electron": "^43.2.0"
-  },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.0.12",
     "typescript": "^7.0.2"
+  },
+  "build": {
+    "appId": "com.giftedsihun.atlas",
+    "productName": "Atlas Browser",
+    "icon": "resources/icon.svg",
+    "files": [
+      "dist/**",
+      "build/renderer/**",
+      "src/renderer/**",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

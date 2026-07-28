@@ -10,9 +10,19 @@ contextBridge.exposeInMainWorld("browserStore", {
   documentCount: () => ipcRenderer.invoke("document:count"),
   graph: () => ipcRenderer.invoke("document:graph"),
   search: (query: string) => ipcRenderer.invoke("document:search", query),
-  crawl: (request: { url: string; maxPages?: number; sameHost?: boolean }) => ipcRenderer.invoke("crawler:start", request),
+  crawl: (request: { jobId: string; url: string; maxPages?: number; sameHost?: boolean }) => ipcRenderer.invoke("crawler:start", request),
+  cancelCrawl: (jobId: string) => ipcRenderer.invoke("crawler:cancel", jobId),
+  onCrawlProgress: (listener: (progress: { jobId: string; indexed: number; skipped: number; failed: number; queued: number; limit: number; currentUrl?: string; status: "running" | "cancelled" | "complete" }) => void) => { const handler = (_event: Electron.IpcRendererEvent, progress: Parameters<typeof listener>[0]) => listener(progress); ipcRenderer.on("crawler:progress", handler); return () => ipcRenderer.removeListener("crawler:progress", handler); },
   notes: () => ipcRenderer.invoke("notes:list"),
   saveNote: (note: { quote: string; body: string; tags: string[]; sourceUrl: string; sourceTitle: string }) => ipcRenderer.invoke("notes:save", note),
   updateNote: (note: { id: number; body: string; tags: string[] }) => ipcRenderer.invoke("notes:update", note),
-  deleteNote: (id: number) => ipcRenderer.invoke("notes:delete", id)
+  deleteNote: (id: number) => ipcRenderer.invoke("notes:delete", id),
+  exportBackup: () => ipcRenderer.invoke("backup:export"),
+  importBackup: () => ipcRenderer.invoke("backup:import")
+});
+
+contextBridge.exposeInMainWorld("windowControls", {
+  minimize: () => ipcRenderer.invoke("window:minimize"),
+  maximize: () => ipcRenderer.invoke("window:maximize"),
+  close: () => ipcRenderer.invoke("window:close")
 });

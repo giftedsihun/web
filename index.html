@@ -1,101 +1,109 @@
 <!doctype html>
 <html lang="ko">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f4f0e8" />
-    <title>SEARCH / 01 - 검색 엔진 구현 계획</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="style.css" />
-  </head>
-  <body>
-    <main class="poster">
-      <header class="masthead reveal">
-        <p class="eyebrow"><span class="signal"></span> KNOWLEDGE INFRASTRUCTURE / MVP BLUEPRINT</p>
-        <p class="issue">PROJECT 01<br />2026</p>
-      </header>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#f4eee0" />
+  <title>ATLAS - 이산수학 지식 탐색기</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="poster">
+    <header class="top-line reveal">
+      <p><span class="beacon"></span> DISCRETE MATHEMATICS / SOFTWARE PROJECT</p>
+      <p>ATLAS BROWSER<br />2026</p>
+    </header>
 
-      <section class="hero reveal">
-        <div>
-          <p class="kicker">지정 웹사이트를 위한</p>
-          <h1>검색 엔진<br /><em>구현 계획</em></h1>
+    <section class="hero reveal">
+      <div class="hero-copy">
+        <p class="label">PERSONAL KNOWLEDGE MAP</p>
+        <h1>ATLAS<br /><em>지식을<br />잇다.</em></h1>
+        <p class="hero-description">웹 문서를 수집하고, 관계를 연결하고,<br />내 컴퓨터에서 다시 찾아보는 지식 탐색기</p>
+      </div>
+      <div class="hero-orbit" aria-label="문서 연결 그래프 시각화">
+        <svg viewBox="0 0 520 520" role="img">
+          <defs><pattern id="dots" width="12" height="12" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.1" fill="#16322d" opacity=".2" /></pattern></defs>
+          <circle class="orbit-bg" cx="260" cy="260" r="244" /><circle class="orbit-ring outer" cx="260" cy="260" r="194" /><circle class="orbit-ring inner" cx="260" cy="260" r="116" />
+          <path class="graph-line" d="M260 260 L99 175 L156 77 M260 260 L377 104 L449 179 M260 260 L401 352 L294 443 M260 260 L117 377 L156 77 M99 175 L117 377 M377 104 L401 352" />
+          <g class="orbit-node coral"><circle cx="260" cy="260" r="66" /><text x="260" y="248">ATLAS</text><text x="260" y="271">SEARCH</text></g>
+          <g class="orbit-node yellow"><circle cx="99" cy="175" r="34" /><text x="99" y="180">문서</text></g>
+          <g class="orbit-node blue"><circle cx="156" cy="77" r="28" /><text x="156" y="82">링크</text></g>
+          <g class="orbit-node green"><circle cx="377" cy="104" r="38" /><text x="377" y="109">검색</text></g>
+          <g class="orbit-node yellow"><circle cx="449" cy="179" r="25" /><text x="449" y="184">NOT</text></g>
+          <g class="orbit-node blue"><circle cx="401" cy="352" r="35" /><text x="401" y="357">노트</text></g>
+          <g class="orbit-node green"><circle cx="294" cy="443" r="27" /><text x="294" y="448">AND</text></g>
+          <g class="orbit-node yellow"><circle cx="117" cy="377" r="37" /><text x="117" y="382">관계</text></g>
+        </svg>
+        <span class="orbit-tag tag-one">GRAPH</span><span class="orbit-tag tag-two">LOGIC</span><span class="orbit-tag tag-three">INDEX</span>
+      </div>
+    </section>
+
+    <section class="process reveal">
+      <div class="section-head"><span>01</span><h2>프로그램은 어떻게 작동할까?</h2><p>WEB → KNOWLEDGE</p></div>
+      <div class="process-rail">
+        <article class="step collect"><span>01</span><div class="step-icon">⌁</div><h3>수집</h3><p>웹페이지 방문</p></article>
+        <i>→</i>
+        <article class="step extract"><span>02</span><div class="step-icon">✂</div><h3>정제</h3><p>글·제목·링크 추출</p></article>
+        <i>→</i>
+        <article class="step index"><span>03</span><div class="step-icon">▦</div><h3>색인</h3><p>단어를 표로 저장</p></article>
+        <i>→</i>
+        <article class="step search"><span>04</span><div class="step-icon">⌕</div><h3>탐색</h3><p>검색·지도·노트</p></article>
+      </div>
+    </section>
+
+    <section class="math-grid">
+      <article class="math-card boolean reveal">
+        <div class="card-number">02 / BOOLEAN ALGEBRA</div>
+        <h2>조건을 고르는<br /><em>논리의 필터</em></h2>
+        <div class="query-visual"><span class="token yellow">AI</span><b>OR</b><span class="token yellow">인공지능</span><br /><b>AND</b><span class="token green">논문</span><b>NOT</b><span class="token off">광고</span></div>
+        <div class="venn" aria-hidden="true"><i></i><i></i><i></i><span>AND</span></div>
+        <p><strong>현실 적용</strong> 쇼핑몰의 ‘검정 AND 5만원 이하 NOT 품절’, 도서관 자료검색, 스팸 메일 필터</p>
+      </article>
+
+      <article class="math-card graph reveal">
+        <div class="card-number">03 / GRAPH THEORY</div>
+        <h2>문서 사이를 잇는<br /><em>관계의 지도</em></h2>
+        <svg viewBox="0 0 430 235" role="img" aria-label="그래프 이론 관계도">
+          <path d="M72 116 L178 55 L250 120 L359 50 M178 55 L345 179 M250 120 L345 179 M72 116 L158 184 M158 184 L345 179" />
+          <circle class="main-node" cx="72" cy="116" r="30" /><circle class="small-node n-yellow" cx="178" cy="55" r="23" /><circle class="small-node n-blue" cx="250" cy="120" r="18" /><circle class="small-node n-green" cx="359" cy="50" r="28" /><circle class="small-node n-coral" cx="345" cy="179" r="22" /><circle class="small-node n-yellow" cx="158" cy="184" r="15" />
+          <text x="72" y="121">나</text><text x="178" y="60">A</text><text x="250" y="125">B</text><text x="359" y="55">C</text><text x="345" y="184">D</text><text x="158" y="189">E</text>
+        </svg>
+        <p><strong>현실 적용</strong> 내비게이션 최단경로, SNS 친구 추천, 지하철 노선, 웹페이지 링크</p>
+      </article>
+
+      <article class="math-card tree reveal">
+        <div class="card-number">04 / TREE &amp; FUNCTION</div>
+        <h2>복잡한 글을<br /><em>구조로 읽다</em></h2>
+        <div class="tree-visual" aria-label="문서 목차 트리">
+          <div class="root">문서</div><div class="branch left">제목</div><div class="branch right">링크</div><div class="leaf a">H1</div><div class="leaf b">H2</div><div class="leaf c">URL</div><div class="leaf d">노트</div>
         </div>
-        <aside class="hero-note">
-          <span>THE PREMISE</span>
-          <p>웹을 단순히 읽지 않고,<br />구조와 관계로 탐색한다.</p>
-        </aside>
-      </section>
+        <p><strong>현실 적용</strong> 컴퓨터 폴더, 회사 조직도, 웹사이트 메뉴는 모두 트리 구조이다.</p>
+      </article>
 
-      <section class="pipeline reveal" aria-label="검색 엔진 처리 흐름">
-        <div class="section-label">01 / ENGINE FLOW</div>
-        <div class="flow">
-          <article class="flow-step coral"><span>01</span><h2>수집</h2><p>crawl</p></article>
-          <i class="arrow">→</i>
-          <article class="flow-step blue"><span>02</span><h2>정제</h2><p>extract</p></article>
-          <i class="arrow">→</i>
-          <article class="flow-step yellow"><span>03</span><h2>색인</h2><p>index</p></article>
-          <i class="arrow">→</i>
-          <article class="flow-step green"><span>04</span><h2>탐색</h2><p>query</p></article>
+      <article class="math-card life reveal">
+        <div class="card-number">05 / IN DAILY LIFE</div>
+        <h2>이미 우리 곁의<br /><em>이산수학</em></h2>
+        <div class="life-icons">
+          <div><span>⌖</span><b>지도</b><small>최단 경로</small></div><div><span>♧</span><b>추천</b><small>관계 그래프</small></div><div><span>⌘</span><b>검색</b><small>논리 연산</small></div><div><span>▤</span><b>분류</b><small>트리 구조</small></div>
         </div>
-        <p class="flow-caption">문서 수집 → 텍스트 정제 → 역색인 → 검색·순위화</p>
-      </section>
+        <p>Atlas는 이 원리를 이용해, 내가 읽은 웹을 <strong>검색 가능한 개인 지식 지도</strong>로 바꾼다.</p>
+      </article>
+    </section>
 
-      <section class="content-grid">
-        <article class="card architecture reveal">
-          <div class="card-head"><p>02 / ARCHITECTURE</p><span>초기 기술 스택</span></div>
-          <div class="stack">
-            <div><b>INTERFACE</b><strong>React <small>+ TypeScript</small></strong></div>
-            <div><b>API</b><strong>FastAPI <small>+ Python</small></strong></div>
-            <div><b>SEARCH</b><strong>SQLite FTS5 <small>→ Meilisearch</small></strong></div>
-            <div><b>DATA</b><strong>SQLite <small>→ PostgreSQL</small></strong></div>
-          </div>
-          <p class="card-foot">가볍게 시작하고, 데이터가 자라면 분리한다.</p>
-        </article>
+    <section class="improve reveal">
+      <div class="section-head"><span>06</span><h2>더 나은 Atlas를 위해</h2><p>LIMIT → UPGRADE</p></div>
+      <div class="improve-grid">
+        <article><div class="warning">!</div><h3>정보 편향</h3><p>적은 사이트만 모으면 결과도 한쪽으로 치우친다.</p><b>다양한 출처 + 신뢰도 점수</b></article>
+        <article><div class="warning">?</div><h3>문맥 이해</h3><p>키워드만으로는 동의어와 의도를 놓칠 수 있다.</p><b>형태소 분석 + 의미 검색</b></article>
+        <article><div class="warning">↻</div><h3>최신성</h3><p>웹페이지는 계속 바뀌지만 색인은 멈춰 있다.</p><b>주기적 재수집 알림</b></article>
+        <article><div class="warning">⌂</div><h3>개인 정보</h3><p>내가 수집한 기록은 안전하게 다뤄야 한다.</p><b>로컬 저장 + 백업 + 삭제</b></article>
+      </div>
+    </section>
 
-        <article class="card logic reveal">
-          <div class="card-head"><p>03 / QUERY LOGIC</p><span>부울 검색</span></div>
-          <div class="query">(<mark>AI</mark> <b>OR</b> <mark>머신러닝</mark>)<br /><b>AND</b> <mark>논문</mark> <b>NOT</b> <mark class="muted">광고</mark></div>
-          <div class="logic-key"><span><i class="dot ai"></i>포함</span><span><i class="dot op"></i>연산자</span><span><i class="dot off"></i>제외</span></div>
-          <p class="card-foot">괄호, 구문 검색, 자동완성까지 확장 가능</p>
-        </article>
-
-        <article class="card map reveal">
-          <div class="card-head"><p>04 / LINK GRAPH</p><span>관계 지도</span></div>
-          <svg viewBox="0 0 460 205" role="img" aria-label="문서 링크 그래프">
-            <path d="M74 109 L184 51 L238 110 L374 54 M184 51 L364 150 M238 110 L364 150 M74 109 L160 159" />
-            <circle class="node node-main" cx="74" cy="109" r="27" /><circle class="node node-a" cx="184" cy="51" r="20" /><circle class="node node-b" cx="238" cy="110" r="16" /><circle class="node node-c" cx="374" cy="54" r="24" /><circle class="node node-d" cx="364" cy="150" r="18" /><circle class="node node-e" cx="160" cy="159" r="12" />
-            <text x="74" y="114">A</text><text x="184" y="56">B</text><text x="238" y="115">C</text><text x="374" y="59">D</text><text x="364" y="155">E</text><text x="160" y="164">F</text>
-          </svg>
-          <p class="card-foot">하이퍼링크를 연결해 관련 문서와 권위도를 발견</p>
-        </article>
-
-        <article class="card model reveal">
-          <div class="card-head"><p>05 / FOUR LENSES</p><span>웹을 보는 네 가지 방식</span></div>
-          <div class="lenses">
-            <div><span class="lens-icon fn">ƒ</span><b>함수</b><p>변환·자동화 규칙</p></div>
-            <div><span class="lens-icon graph">●—●</span><b>그래프</b><p>링크·추천 관계</p></div>
-            <div><span class="lens-icon tree">⌜┬</span><b>트리</b><p>목차·문서 구조</p></div>
-            <div><span class="lens-icon bool">∧∨¬</span><b>부울</b><p>검색·필터 조건</p></div>
-          </div>
-        </article>
-      </section>
-
-      <section class="roadmap reveal">
-        <div class="section-label">06 / MVP MILESTONES</div>
-        <ol>
-          <li><span>WEEK 01</span><b>수집 기반</b><p>URL 등록 · robots.txt · 중복 제거</p></li>
-          <li><span>WEEK 02</span><b>검색 기반</b><p>문서 저장 · FTS 색인 · 결과 화면</p></li>
-          <li><span>WEEK 03</span><b>논리 질의</b><p>AND / OR / NOT · 랭킹 · 스니펫</p></li>
-          <li><span>WEEK 04</span><b>구조 탐색</b><p>목차 트리 · 링크 그래프 · 관리자</p></li>
-        </ol>
-      </section>
-
-      <footer class="footer reveal">
-        <p><b>MVP DONE WHEN</b> 지정 사이트 수집 · 부울 검색 · 원문 링크 · 구조 탐색</p>
-        <p>SEARCH AS STRUCTURE, NOT JUST RESULTS. <span>↗</span></p>
-      </footer>
-    </main>
-  </body>
+    <footer class="reveal"><p><b>KEY MESSAGE</b> 이산수학은 정보를 분류하고, 연결하고, 선택하는 언어다.</p><p>SEARCH AS A MAP, NOT A LIST. <span>↗</span></p></footer>
+  </main>
+</body>
 </html>

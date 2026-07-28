@@ -1,0 +1,14 @@
+services:
+  public-search:
+    build:
+      context: .
+      dockerfile: public-search/Dockerfile
+    ports:
+      - "8787:8787"
+    environment:
+      PUBLIC_SEARCH_DB: /data/public-search.sqlite
+      PUBLIC_SEARCH_ADMIN_TOKEN: ${PUBLIC_SEARCH_ADMIN_TOKEN:-change-me}
+    volumes:
+      - public-search-data:/data
+volumes:
+  public-search-data:
