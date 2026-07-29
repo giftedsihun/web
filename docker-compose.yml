@@ -7,7 +7,21 @@ services:
       - "8787:8787"
     environment:
       PUBLIC_SEARCH_DB: /data/public-search.sqlite
-      PUBLIC_SEARCH_ADMIN_TOKEN: ${PUBLIC_SEARCH_ADMIN_TOKEN:-change-me}
+      PUBLIC_SEARCH_ADMIN_TOKEN: ${PUBLIC_SEARCH_ADMIN_TOKEN:?Set PUBLIC_SEARCH_ADMIN_TOKEN to a secret before starting public-search}
+      # Optional comma-separated browser origins. Cross-origin browser requests are denied by default.
+      PUBLIC_SEARCH_CORS_ORIGINS: ${PUBLIC_SEARCH_CORS_ORIGINS:-}
+      PUBLIC_SEARCH_MAX_CONCURRENT_CRAWLS: ${PUBLIC_SEARCH_MAX_CONCURRENT_CRAWLS:-2}
+      # Optional HTTPS webhook alerts. Both URL and secret are required when enabled.
+      PUBLIC_SEARCH_WEBHOOK_URL: ${PUBLIC_SEARCH_WEBHOOK_URL:-}
+      PUBLIC_SEARCH_WEBHOOK_SECRET: ${PUBLIC_SEARCH_WEBHOOK_SECRET:-}
+      PUBLIC_SEARCH_WEBHOOK_EVENTS: ${PUBLIC_SEARCH_WEBHOOK_EVENTS:-}
+    healthcheck:
+      # Keep the Compose status aligned with the image health endpoint.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     volumes:
       - public-search-data:/data
 volumes:

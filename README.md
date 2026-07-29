@@ -53,8 +53,44 @@ Invoke-RestMethod "http://localhost:8787/v1/crawls/<job-id>" -Method Delete -Hea
 Or start the same service with Docker:
 
 ```powershell
-$env:PUBLIC_SEARCH_ADMIN_TOKEN = "replace-this-token"
+# Copy-Item .env.example .env
+# Set PUBLIC_SEARCH_ADMIN_TOKEN in .env to a long, random secret.
 docker compose up --build
 ```
 
 The service resumes queued/running jobs when it starts, periodically starts due recrawls, and supports only explicitly approved hosts per crawl job. For production, replace the SQLite frontier/index with managed queue, object storage, and a distributed search cluster; add reliable HTML parsing/rendering, host/domain policies, canonical and duplicate clusters, distributed leases, metrics, abuse handling, and legal/privacy operations before expanding the corpus.
+
+### Operations
+
+- `GET /health` confirms the process and database are responding; `GET /ready` is the readiness probe.
+- The Docker image and Compose service use `/health` for their healthchecks. Wait for `healthy` before routing traffic to a new container.
+- Set `PUBLIC_SEARCH_MAX_CONCURRENT_CRAWLS` to an integer from `1` to `10` (default `2`) to bound concurrent crawl jobs.
+- Admin APIs provide paginated jobs/frontier inspection, pause/resume, retention previews, document-domain deletion previews, stats, and audit entries. Run destructive actions as dry runs first.
+- `GET /v1/admin/documents/inspect?url=<indexed-url>` exposes stored document and quality metadata. `DELETE /v1/admin/documents?url=<indexed-url>` deletes one indexed document. `POST /v1/admin/documents/requeue` with `{ "url": "<indexed-url>", "jobId": "<optional-source-job>" }` only requeues an existing approved frontier entry; it never fetches a caller-supplied target, so the crawler still enforces public-target, host, robots, and crawl-policy checks.
+- Crawl lifecycle events are emitted as one-line structured JSON logs without seed URLs or credentials. Optional signed alerts require both `PUBLIC_SEARCH_WEBHOOK_URL` (HTTPS only) and `PUBLIC_SEARCH_WEBHOOK_SECRET` (16-512 characters); no webhook or secret is enabled by default. Set `PUBLIC_SEARCH_WEBHOOK_EVENTS` to a comma-separated subset of `crawl.submitted`, `crawl.running`, `crawl.completed`, `crawl.failed`, `crawl.cancelled`, `crawl.paused`, `crawl.resumed`, `crawl.restarted`, and `crawl.retry_queued` (terminal alerts are the default). Alerts use bounded redacted payloads, an HMAC-SHA256 `x-atlas-signature`, a five-second timeout, and are queued asynchronously so crawl work does not await network delivery.
+- Persist `/data` (the named Docker volume by default) and back up `public-search.sqlite`, `-wal`, and `-shm` together after stopping writes or using a SQLite-consistent backup.
+- The versioned API contract is [`public-search/openapi.yaml`](public-search/openapi.yaml). Public API errors have an `{ "error": "..." }` body; authenticated endpoints use `Authorization: Bearer <token>`. `/v1/*` is rate-limited and reports `Retry-After` on `429` responses.
+
+### Backup and recovery
+
+The SQLite database uses WAL mode. Take a cold backup only after stopping all service writers; the Windows PowerShell script copies the database and its `-wal`/`-shm` companions together. Backups are ignored by Git by default.
+
+```powershell
+docker compose down
+.\scripts\public-search-backup.ps1 -Action backup -DatabasePath "data\public-search.sqlite" -ServiceStopped
+
+# Restore a named backup only while public-search is stopped. -Force permits replacing an existing database.
+.\scripts\public-search-backup.ps1 -Action restore -DatabasePath "data\public-search.sqlite" -BackupPath "backups\public-search-YYYYMMDD-HHMMSS.sqlite" -ServiceStopped -Force
+docker compose up -d
+```
+
+For the Compose named volume, first copy `/data/public-search.sqlite`, `/data/public-search.sqlite-wal`, and `/data/public-search.sqlite-shm` from a stopped container or volume into a local directory, then use that directory as `-DatabasePath`. Do not restore a database while the service is running.
+
+### Deployment smoke test
+
+After deployment and after recovery, run the Windows-compatible smoke test. It checks liveness, readiness, public search, and (when a token is supplied) an authenticated admin route without making changes.
+
+```powershell
+$env:PUBLIC_SEARCH_ADMIN_TOKEN = "replace-this-token"
+.\scripts\public-search-smoke.ps1 -BaseUrl "http://localhost:8787"
+```

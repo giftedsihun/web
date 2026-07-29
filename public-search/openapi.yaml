@@ -1,0 +1,331 @@
+openapi: 3.0.3
+info:
+  title: Atlas Public Search API
+  version: 1.0.0
+  description: |
+    HTTP contract for the Atlas public-search service. Read endpoints are public;
+    crawl and administration endpoints require the configured bearer token.
+servers:
+  - url: http://localhost:8787
+tags:
+  - name: Service
+  - name: Search
+  - name: Crawls
+  - name: Administration
+paths:
+  /health:
+    get:
+      tags: [Service]
+      summary: Liveness probe
+      responses:
+        '200':
+          description: Process and database are responding.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /ready:
+    get:
+      tags: [Service]
+      summary: Readiness probe
+      responses:
+        '200':
+          description: Service is ready to accept requests.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, ready]
+                properties:
+                  ok: { type: boolean, example: true }
+                  ready: { type: boolean, example: true }
+  /v1/search:
+    get:
+      tags: [Search]
+      summary: Search indexed public documents
+      parameters:
+        - $ref: '#/components/parameters/Query'
+        - $ref: '#/components/parameters/Page'
+        - name: sort
+          in: query
+          schema: { type: string, enum: [relevance, newest], default: relevance }
+        - name: domain
+          in: query
+          schema: { type: string, example: example.com }
+        - name: from
+          in: query
+          description: Inclusive indexed date, YYYY-MM-DD.
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: Inclusive indexed date, YYYY-MM-DD.
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: A page of matching documents.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/search/suggestions:
+    get:
+      tags: [Search]
+      summary: Suggest public indexed titles and domains without retaining query history
+      parameters:
+        - $ref: '#/components/parameters/Query'
+      responses:
+        '200': { description: Up to eight suggestions derived from public indexed documents. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/crawls:
+    get:
+      tags: [Crawls]
+      security: [{ bearerAuth: [] }]
+      summary: List crawl jobs
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/CrawlStatus' }
+      responses:
+        '200': { description: Crawl jobs, paginated. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Crawls]
+      security: [{ bearerAuth: [] }]
+      summary: Submit a crawl job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CrawlRequest' }
+      responses:
+        '202':
+          description: Crawl accepted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CrawlJob' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+  /v1/crawls/summary:
+    get:
+      tags: [Crawls]
+      security: [{ bearerAuth: [] }]
+      summary: Get crawl status totals
+      responses:
+        '200': { description: Crawl totals by status. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/crawls/{id}:
+    get:
+      tags: [Crawls]
+      security: [{ bearerAuth: [] }]
+      summary: Get crawl job and frontier summary
+      parameters: [{ $ref: '#/components/parameters/CrawlId' }]
+      responses:
+        '200': { description: Crawl job and frontier progress. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Crawls]
+      security: [{ bearerAuth: [] }]
+      summary: Cancel an active crawl job
+      parameters: [{ $ref: '#/components/parameters/CrawlId' }]
+      responses:
+        '202': { description: Crawl cancellation accepted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/crawls/{id}/pause:
+    post:
+      tags: [Crawls]
+      security: [{ bearerAuth: [] }]
+      summary: Pause a queued or running crawl
+      parameters: [{ $ref: '#/components/parameters/CrawlId' }]
+      responses: { '202': { description: Crawl paused. }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { description: Crawl cannot be paused. } }
+  /v1/crawls/{id}/resume:
+    post:
+      tags: [Crawls]
+      security: [{ bearerAuth: [] }]
+      summary: Resume a paused crawl
+      parameters: [{ $ref: '#/components/parameters/CrawlId' }]
+      responses: { '202': { description: Crawl queued. }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { description: Crawl cannot be resumed. } }
+  /v1/crawls/{id}/restart:
+    post:
+      tags: [Crawls]
+      security: [{ bearerAuth: [] }]
+      summary: Restart a terminal crawl
+      parameters: [{ $ref: '#/components/parameters/CrawlId' }]
+      responses: { '202': { description: Crawl queued. }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { description: Crawl cannot be restarted. } }
+  /v1/crawls/{id}/frontier:
+    get:
+      tags: [Crawls]
+      security: [{ bearerAuth: [] }]
+      summary: List frontier entries for a crawl
+      parameters:
+        - $ref: '#/components/parameters/CrawlId'
+        - $ref: '#/components/parameters/Page'
+        - name: state
+          in: query
+          schema: { type: string, enum: [queued, processing, fetched, failed] }
+      responses: { '200': { description: Paginated frontier entries. }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
+  /v1/crawls/{id}/frontier/retry:
+    post:
+      tags: [Crawls]
+      security: [{ bearerAuth: [] }]
+      summary: Retry failed frontier entries in a terminal crawl
+      parameters: [{ $ref: '#/components/parameters/CrawlId' }]
+      responses: { '202': { description: Retry accepted. }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { description: Retry unavailable. } }
+  /v1/crawls/{id}/schedule:
+    post:
+      tags: [Crawls]
+      security: [{ bearerAuth: [] }]
+      summary: Set periodic recrawl interval
+      parameters: [{ $ref: '#/components/parameters/CrawlId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [recrawlMinutes], properties: { recrawlMinutes: { type: integer, minimum: 15 } } }
+      responses: { '200': { description: Schedule updated. }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /v1/admin/stats:
+    get:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: Get index and crawler statistics
+      responses: { '200': { description: Current statistics. }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /v1/admin/retention:
+    post:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: Preview or apply retention cleanup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [before]
+              properties:
+                before: { type: string, format: date-time }
+                deleteDocuments: { type: boolean, default: false }
+                dryRun: { type: boolean, default: true }
+      responses: { '200': { description: Cleanup result or preview. }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /v1/admin/search/optimize:
+    post:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: Optimize SQLite full-text search storage
+      responses: { '200': { description: Optimization completed. }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /v1/admin/search/rebuild-ngrams:
+    post:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: Rebuild the Korean n-gram fallback index from stored documents
+      responses: { '200': { description: N-gram index rebuilt. }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /v1/admin/documents:
+    get:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: List indexed documents
+      parameters: [{ $ref: '#/components/parameters/Page' }, { name: domain, in: query, schema: { type: string } }]
+       responses: { '200': { description: Paginated document list. }, '401': { $ref: '#/components/responses/Unauthorized' } }
+    delete:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: Delete one indexed document
+      parameters: [{ name: url, in: query, required: true, schema: { type: string, format: uri } }]
+      responses: { '200': { description: Document deleted. }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
+  /v1/admin/documents/inspect:
+    get:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: Inspect stored document quality and crawl-source metadata
+      parameters: [{ name: url, in: query, required: true, schema: { type: string, format: uri } }]
+      responses: { '200': { description: Document inspection. }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
+  /v1/admin/documents/requeue:
+    post:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: Requeue an indexed document through an existing approved crawl frontier
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [url], properties: { url: { type: string, format: uri }, jobId: { type: string } } }
+      responses: { '202': { description: Document requeued. }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { description: No eligible approved crawl source. } }
+  /v1/admin/documents/delete:
+    post:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: Preview or delete all indexed documents for a domain
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [domain], properties: { domain: { type: string }, dryRun: { type: boolean, default: true } } }
+      responses: { '200': { description: Deletion result or preview. }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /v1/admin/audit:
+    get:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: List administration audit entries
+      responses: { '200': { description: Audit entries. }, '401': { $ref: '#/components/responses/Unauthorized' } }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+  parameters:
+    Query: { name: q, in: query, required: true, schema: { type: string, minLength: 1 } }
+    Page: { name: page, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 1 } }
+    CrawlId: { name: id, in: path, required: true, schema: { type: string } }
+  responses:
+    BadRequest: { description: Invalid request input. }
+    Unauthorized: { description: Missing or invalid admin bearer token. }
+    NotFound: { description: Resource not found. }
+    UnsupportedMediaType: { description: Request must use application/json. }
+    RateLimited: { description: Rate limit exceeded; inspect Retry-After. }
+  schemas:
+    Health:
+      type: object
+      required: [ok, documents]
+      properties: { ok: { type: boolean }, documents: { type: integer, minimum: 0 } }
+    CrawlStatus: { type: string, enum: [queued, running, paused, complete, cancelled, failed] }
+    CrawlRequest:
+      type: object
+      required: [seedUrl]
+      properties:
+        seedUrl: { type: string, format: uri }
+        maxPages: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        allowedHosts: { type: array, items: { type: string }, maxItems: 50 }
+        recrawlMinutes: { type: integer, minimum: 15 }
+        crawlPolicy: { type: object, additionalProperties: true }
+    CrawlJob:
+      type: object
+      required: [id, seedUrl, maxPages, allowedHosts, status, indexed, skipped, failed, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        seedUrl: { type: string, format: uri }
+        maxPages: { type: integer }
+        allowedHosts: { type: array, items: { type: string } }
+        status: { $ref: '#/components/schemas/CrawlStatus' }
+        indexed: { type: integer }
+        skipped: { type: integer }
+        failed: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    SearchResponse:
+      type: object
+      required: [query, page, pageSize, total, totalPages, results, facets, source]
+      properties:
+        query: { type: string }
+        sort: { type: string, enum: [relevance, newest] }
+        domain: { type: string, nullable: true }
+        page: { type: integer }
+        pageSize: { type: integer, example: 20 }
+        total: { type: integer }
+        totalPages: { type: integer }
+        results:
+          type: array
+          items: { type: object, required: [title, url, preview, indexedAt, score], properties: { title: { type: string }, url: { type: string, format: uri }, preview: { type: string }, indexedAt: { type: string, format: date-time }, score: { type: number } } }
+        facets: { type: object }
+        source: { type: string, example: atlas-public-starter }

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { clampCrawlLimit, crawlProgressValue, matchesSearchFilters, normalizeSession, noteImportKey } from "../dist/core.js";
+import { clampCrawlLimit, crawlProgressValue, isPublicIpAddress, isSafeCrawlerUrl, koreanNgrams, matchesSearchFilters, normalizeSession, noteImportKey } from "../dist/core.js";
+import { CrawlResponseTooLargeError, MAX_DOCUMENT_BYTES, readCrawlResponseText } from "../dist/crawl-response.js";
 
 test("crawl limits are bounded", () => {
   assert.equal(clampCrawlLimit(), 10);
@@ -39,4 +40,35 @@ test("crawler UI progress never exceeds its configured limit", () => {
 test("backup note keys distinguish content but find identical notes", () => {
   assert.equal(noteImportKey("https://atlas.test", "A quote", "Thought"), noteImportKey("https://atlas.test", "A quote", "Thought"));
   assert.notEqual(noteImportKey("https://atlas.test", "A quote", "Thought"), noteImportKey("https://atlas.test", "A quote", "Other thought"));
+});
+
+test("Korean n-grams preserve searchable syllable pairs", () => {
+  assert.deepEqual(koreanNgrams("한국어 검색"), ["한국", "국어", "검색"]);
+});
+
+test("crawler URL policy blocks local network targets", () => {
+  assert.equal(isSafeCrawlerUrl("https://example.test/docs"), true);
+  assert.equal(isSafeCrawlerUrl("http://127.0.0.1/admin"), false);
+  assert.equal(isSafeCrawlerUrl("http://192.168.1.5/"), false);
+  assert.equal(isSafeCrawlerUrl("file:///etc/passwd"), false);
+});
+
+test("resolved crawler addresses reject private and link-local networks", () => {
+  assert.equal(isPublicIpAddress("8.8.8.8"), true);
+  assert.equal(isPublicIpAddress("172.20.0.4"), false);
+  assert.equal(isPublicIpAddress("100.64.0.1"), false);
+  assert.equal(isPublicIpAddress("198.18.0.1"), false);
+  assert.equal(isPublicIpAddress("203.0.113.1"), false);
+  assert.equal(isPublicIpAddress("169.254.169.254"), false);
+  assert.equal(isPublicIpAddress("fe80::1"), false);
+  assert.equal(isPublicIpAddress("::ffff:127.0.0.1"), false);
+  assert.equal(isPublicIpAddress("2001:db8::1"), false);
+  assert.equal(isPublicIpAddress("2606:4700:4700::1111"), true);
+});
+
+test("local crawler bounds response reads before indexing", async () => {
+  assert.equal(await readCrawlResponseText(new Response("atlas"), MAX_DOCUMENT_BYTES), "atlas");
+  await assert.rejects(readCrawlResponseText(new Response("", { headers: { "content-length": String(MAX_DOCUMENT_BYTES + 1) } }), MAX_DOCUMENT_BYTES), CrawlResponseTooLargeError);
+  const stream = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(MAX_DOCUMENT_BYTES + 1)); controller.close(); } });
+  await assert.rejects(readCrawlResponseText(new Response(stream), MAX_DOCUMENT_BYTES), CrawlResponseTooLargeError);
 });

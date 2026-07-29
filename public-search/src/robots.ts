@@ -1,5 +1,17 @@
 type Rule = { allow: boolean; path: string };
 
+export function robotsSitemaps(text: string) {
+  const sitemaps = new Set<string>();
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/#.*/, "").trim();
+    const separator = line.indexOf(":");
+    if (separator < 0 || line.slice(0, separator).trim().toLowerCase() !== "sitemap") continue;
+    const location = line.slice(separator + 1).trim();
+    if (location) sitemaps.add(location);
+  }
+  return [...sitemaps];
+}
+
 function groupsForAgent(text: string, agent: string) {
   const groups: Array<{ agents: string[]; rules: Rule[]; delay?: number }> = [];
   let current: { agents: string[]; rules: Rule[]; delay?: number } | undefined;

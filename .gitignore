@@ -3,3 +3,5 @@ dist/
 build/
 data/
 *.log
+.env
+backups/

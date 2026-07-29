@@ -1,8 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, session } from "electron";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { lookup } from "node:dns/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { clampCrawlLimit, normalizeSession, noteImportKey } from "./core";
+import { clampCrawlLimit, isPublicIpAddress, isSafeCrawlerUrl, koreanNgrams, normalizeSession, noteImportKey } from "./core";
+import { MAX_DOCUMENT_BYTES, MAX_ROBOTS_BYTES, MAX_SITEMAP_BYTES, readCrawlResponseText } from "./crawl-response";
 
 type LinkItem = { title: string; url: string };
 type IndexedDocument = { title: string; url: string; text: string; headings: string[]; links: LinkItem[]; indexedAt: string };
@@ -26,6 +28,32 @@ type CrawlJob = { cancelled: boolean; controller: AbortController };
 
 let database: DatabaseSync;
 const crawlJobs = new Map<string, CrawlJob>();
+
+type DownloadStatus = { id: string; name: string; state: "starting" | "progressing" | "complete" | "cancelled" | "interrupted"; received: number; total: number; path?: string };
+
+function sendDownloadStatus(webContents: Electron.WebContents, status: DownloadStatus) {
+  const host = (webContents as Electron.WebContents & { hostWebContents?: Electron.WebContents }).hostWebContents || webContents;
+  if (!host.isDestroyed()) host.send("download:updated", status);
+}
+
+function configureGuestSession() {
+  const guestSession = session.fromPartition("persist:atlas");
+  guestSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  guestSession.setPermissionCheckHandler(() => false);
+  guestSession.on("will-download", (_event, item, webContents) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const name = item.getFilename();
+    sendDownloadStatus(webContents, { id, name, state: "starting", received: 0, total: item.getTotalBytes() });
+    item.pause();
+    void dialog.showSaveDialog({ title: "다운로드 저장", defaultPath: join(app.getPath("downloads"), name) }).then((target) => {
+      if (target.canceled || !target.filePath) { item.cancel(); return; }
+      item.setSavePath(target.filePath);
+      item.resume();
+    });
+    item.on("updated", (_updateEvent, state) => sendDownloadStatus(webContents, { id, name, state: state === "interrupted" ? "interrupted" : "progressing", received: item.getReceivedBytes(), total: item.getTotalBytes() }));
+    item.once("done", (_doneEvent, state) => sendDownloadStatus(webContents, { id, name, state: state === "completed" ? "complete" : state === "cancelled" ? "cancelled" : "interrupted", received: item.getReceivedBytes(), total: item.getTotalBytes(), path: state === "completed" ? item.getSavePath() : undefined }));
+  });
+}
 
 const statePath = () => join(app.getPath("userData"), "knowledge-browser.json");
 const loadState = (): SavedState => {
@@ -59,6 +87,7 @@ function initializeSearchIndex() {
     CREATE VIRTUAL TABLE IF NOT EXISTS document_search USING fts5(
       url UNINDEXED, title, headings, text
     );
+    CREATE VIRTUAL TABLE IF NOT EXISTS document_ngrams USING fts5(url UNINDEXED, grams);
     CREATE TABLE IF NOT EXISTS notes (
       id INTEGER PRIMARY KEY AUTOINCREMENT, quote TEXT NOT NULL, body TEXT NOT NULL,
       source_url TEXT NOT NULL, source_title TEXT NOT NULL, created_at TEXT NOT NULL
@@ -70,19 +99,28 @@ function initializeSearchIndex() {
     CREATE VIRTUAL TABLE IF NOT EXISTS note_search USING fts5(
       note_id UNINDEXED, quote, body, tags
     );
+    CREATE VIRTUAL TABLE IF NOT EXISTS note_ngrams USING fts5(note_id UNINDEXED, grams);
   `);
 
   // Preserve documents collected by earlier JSON-backed Atlas versions.
   const count = (database.prepare("SELECT count(*) AS count FROM documents").get() as { count: number }).count;
   if (count === 0) loadState().documents.forEach(indexDocument);
+  const ngramCount = (database.prepare("SELECT count(*) AS count FROM document_ngrams").get() as { count: number }).count;
+  if (ngramCount === 0 && documentCount()) {
+    const rows = database.prepare("SELECT d.url, d.title, d.headings, s.text FROM documents d JOIN document_search s ON s.url = d.url").all() as Array<{ url: string; title: string; headings: string; text: string }>;
+    const insert = database.prepare("INSERT INTO document_ngrams (url, grams) VALUES (?, ?)");
+    rows.forEach((row) => insert.run(row.url, koreanNgrams(`${row.title} ${row.headings} ${row.text}`).join(" ")));
+  }
 }
 
 function indexDocument(document: IndexedDocument) {
   const headings = JSON.stringify(document.headings);
   database.prepare("DELETE FROM document_links WHERE source_url = ?").run(document.url);
   database.prepare("DELETE FROM document_search WHERE url = ?").run(document.url);
+  database.prepare("DELETE FROM document_ngrams WHERE url = ?").run(document.url);
   database.prepare("INSERT INTO documents (url, title, headings, indexed_at) VALUES (?, ?, ?, ?) ON CONFLICT(url) DO UPDATE SET title = excluded.title, headings = excluded.headings, indexed_at = excluded.indexed_at").run(document.url, document.title, headings, document.indexedAt);
   database.prepare("INSERT INTO document_search (url, title, headings, text) VALUES (?, ?, ?, ?)").run(document.url, document.title, document.headings.join(" "), document.text);
+  database.prepare("INSERT INTO document_ngrams (url, grams) VALUES (?, ?)").run(document.url, koreanNgrams(`${document.title} ${document.headings.join(" ")} ${document.text}`).join(" "));
   const insertLink = database.prepare("INSERT OR IGNORE INTO document_links (source_url, target_url, title) VALUES (?, ?, ?)");
   document.links.slice(0, 40).forEach((link) => insertLink.run(document.url, link.url, link.title));
   return documentCount();
@@ -108,13 +146,49 @@ function extractCrawlDocument(url: string, html: string): IndexedDocument {
 async function allowedByRobots(url: URL, cache: Map<string, string>, signal: AbortSignal) {
   const origin = url.origin;
   if (!cache.has(origin)) {
-    try { cache.set(origin, await (await fetch(`${origin}/robots.txt`, { headers: { "User-Agent": "AtlasBrowser/1.0" }, signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]) })).text()); }
+    try { cache.set(origin, await readCrawlResponseText(await fetchWithRetry(`${origin}/robots.txt`, { headers: { "User-Agent": "AtlasBrowser/1.0" }, signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]) }), MAX_ROBOTS_BYTES)); }
     catch (error) { if (signal.aborted) throw error; cache.set(origin, ""); }
   }
   const rules = cache.get(origin) || "";
   const groups = rules.split(/\n\s*\n/).filter((group) => /user-agent\s*:\s*\*/i.test(group));
   const disallowed = groups.flatMap((group) => [...group.matchAll(/^\s*disallow\s*:\s*(\S+)/gim)].map((match) => match[1])).filter(Boolean);
   return !disallowed.some((path) => url.pathname.startsWith(path));
+}
+
+async function assertPublicTarget(value: string) {
+  if (!isSafeCrawlerUrl(value)) throw new Error("Blocked non-public URL");
+  const url = new URL(value);
+  const addresses = await lookup(url.hostname, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some((entry) => !isPublicIpAddress(entry.address))) throw new Error("Blocked private network address");
+}
+
+async function fetchWithRetry(url: string, init: RequestInit, attempts = 3) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      let target = url;
+      for (let redirect = 0; redirect < 6; redirect++) {
+        await assertPublicTarget(target);
+        const response = await fetch(target, { ...init, redirect: "manual" });
+        if (response.status < 300 || response.status >= 400) { if (response.status < 500 && response.status !== 429) return response; lastError = new Error(`HTTP ${response.status}`); break; }
+        const location = response.headers.get("location");
+        if (!location) throw new Error("Redirect without location");
+        target = new URL(location, target).toString();
+      }
+      if (!lastError) lastError = new Error("Too many redirects");
+    }
+    catch (error) { lastError = error; }
+    await new Promise((resolve) => setTimeout(resolve, 500 * (2 ** attempt)));
+  }
+  throw lastError instanceof Error ? lastError : new Error("Request failed");
+}
+
+function sitemapLinks(xml: string, sourceUrl: string) {
+  const links: string[] = [];
+  for (const match of xml.matchAll(/<loc\b[^>]*>([\s\S]*?)<\/loc>/gi)) {
+    try { const url = canonicalUrl(new URL(match[1].trim(), sourceUrl).toString()); if (isSafeCrawlerUrl(url) && !links.includes(url)) links.push(url); } catch { /* Ignore invalid locations. */ }
+  }
+  return links.slice(0, 500);
 }
 
 function sendCrawlProgress(sender: Electron.WebContents, progress: CrawlProgress) {
@@ -124,10 +198,14 @@ function sendCrawlProgress(sender: Electron.WebContents, progress: CrawlProgress
 async function crawlSite(request: CrawlRequest, sender: Electron.WebContents, jobId: string): Promise<CrawlResult> {
   let seed: URL;
   try { seed = new URL(request.url); } catch { return { indexed: 0, skipped: 0, failed: 0, message: "유효한 시작 주소를 입력하세요." }; }
-  if (!/^https?:$/.test(seed.protocol)) return { indexed: 0, skipped: 0, failed: 0, message: "HTTP 또는 HTTPS 주소만 크롤링할 수 있습니다." };
+  if (!isSafeCrawlerUrl(seed.toString())) return { indexed: 0, skipped: 0, failed: 0, message: "공개 HTTP/HTTPS 주소만 수집할 수 있습니다." };
   const maxPages = clampCrawlLimit(request.maxPages);
   const queue = [canonicalUrl(seed.toString())]; const seen = new Set<string>(); const robots = new Map<string, string>();
   let indexed = 0; let skipped = 0; let failed = 0;
+  try {
+    const sitemap = await fetchWithRetry(new URL("/sitemap.xml", seed.origin).toString(), { headers: { "User-Agent": "AtlasBrowser/1.0" }, signal: AbortSignal.timeout(10_000) });
+    if (sitemap.ok) sitemapLinks(await readCrawlResponseText(sitemap, MAX_SITEMAP_BYTES), seed.origin).filter((url) => request.sameHost === false || new URL(url).host === seed.host).forEach((url) => queue.push(url));
+  } catch { /* Sitemap discovery is optional. */ }
   const report = (status: CrawlProgress["status"], currentUrl?: string) => sendCrawlProgress(sender, { jobId, indexed, skipped, failed, queued: queue.length, limit: maxPages, currentUrl, status });
   report("running");
   const job = () => crawlJobs.get(jobId);
@@ -140,13 +218,13 @@ async function crawlSite(request: CrawlRequest, sender: Electron.WebContents, jo
     report("running", next);
     try {
       const page = new URL(next);
-      if (request.sameHost !== false && page.host !== seed.host) { skipped++; continue; }
+      if (!isSafeCrawlerUrl(page.toString()) || (request.sameHost !== false && page.host !== seed.host)) { skipped++; continue; }
       if (!await allowedByRobots(page, robots, job()?.controller.signal || AbortSignal.abort())) { skipped++; continue; }
-      const response = await fetch(next, { redirect: "follow", headers: { "User-Agent": "AtlasBrowser/1.0 (+local knowledge index)" }, signal: AbortSignal.any([job()?.controller.signal || AbortSignal.abort(), AbortSignal.timeout(10000)]) });
+      const response = await fetchWithRetry(next, { redirect: "follow", headers: { "User-Agent": "AtlasBrowser/1.0 (+local knowledge index)" }, signal: AbortSignal.any([job()?.controller.signal || AbortSignal.abort(), AbortSignal.timeout(10000)]) });
       if (!response.ok || !response.headers.get("content-type")?.includes("text/html")) { skipped++; continue; }
       const finalUrl = new URL(response.url);
-      if (request.sameHost !== false && finalUrl.host !== seed.host) { skipped++; continue; }
-      const document = extractCrawlDocument(canonicalUrl(response.url), await response.text());
+      if (!isSafeCrawlerUrl(finalUrl.toString()) || (request.sameHost !== false && finalUrl.host !== seed.host)) { skipped++; continue; }
+      const document = extractCrawlDocument(canonicalUrl(response.url), await readCrawlResponseText(response, MAX_DOCUMENT_BYTES));
       indexDocument(document); indexed++;
       document.links.forEach((link) => { if (!seen.has(link.url) && (!request.sameHost || new URL(link.url).host === seed.host) && queue.length < maxPages * 4) queue.push(link.url); });
       await new Promise<void>((resolve, reject) => { const timeout = setTimeout(resolve, 350); job()?.controller.signal.addEventListener("abort", () => { clearTimeout(timeout); reject(new Error("Crawl cancelled")); }, { once: true }); });
@@ -180,6 +258,7 @@ function saveNote(input: NoteInput): Note {
   const insertTag = database.prepare("INSERT OR IGNORE INTO note_tags (note_id, tag) VALUES (?, ?)");
   tags.forEach((tag) => insertTag.run(id, tag));
   database.prepare("INSERT INTO note_search (note_id, quote, body, tags) VALUES (?, ?, ?, ?)").run(id, quote, body, tags.join(" "));
+  database.prepare("INSERT INTO note_ngrams (note_id, grams) VALUES (?, ?)").run(id, koreanNgrams(`${quote} ${body} ${tags.join(" ")}`).join(" "));
   return { id, quote, body, tags, sourceUrl: input.sourceUrl, sourceTitle: input.sourceTitle, createdAt };
 }
 
@@ -191,15 +270,18 @@ function updateNote(input: NoteUpdate): Note {
   database.prepare("UPDATE notes SET body = ? WHERE id = ?").run(body, input.id);
   database.prepare("DELETE FROM note_tags WHERE note_id = ?").run(input.id);
   database.prepare("DELETE FROM note_search WHERE note_id = ?").run(input.id);
+  database.prepare("DELETE FROM note_ngrams WHERE note_id = ?").run(input.id);
   const insertTag = database.prepare("INSERT OR IGNORE INTO note_tags (note_id, tag) VALUES (?, ?)");
   tags.forEach((tag) => insertTag.run(input.id, tag));
   database.prepare("INSERT INTO note_search (note_id, quote, body, tags) VALUES (?, ?, ?, ?)").run(input.id, existing.quote, body, tags.join(" "));
+  database.prepare("INSERT INTO note_ngrams (note_id, grams) VALUES (?, ?)").run(input.id, koreanNgrams(`${existing.quote} ${body} ${tags.join(" ")}`).join(" "));
   return { ...existing, body, tags };
 }
 
 function deleteNote(id: number) {
   database.prepare("DELETE FROM note_tags WHERE note_id = ?").run(id);
   database.prepare("DELETE FROM note_search WHERE note_id = ?").run(id);
+  database.prepare("DELETE FROM note_ngrams WHERE note_id = ?").run(id);
   database.prepare("DELETE FROM notes WHERE id = ?").run(id);
 }
 
@@ -235,10 +317,16 @@ function searchDocuments(query: string): { results: SearchResult[]; error?: stri
       WHERE note_search MATCH ? ORDER BY bm25(note_search), n.created_at DESC LIMIT 50
     `).all(query) as Array<{ id: number; quote: string; body: string; title: string; url: string; indexedAt: string; preview: string }>;
     const noteTags = database.prepare("SELECT note_id AS noteId, tag FROM note_tags").all() as Array<{ noteId: number; tag: string }>;
-    return { results: [
+    const directResults: SearchResult[] = [
       ...documentResults.map((item) => ({ kind: "document" as const, ...item, headings: JSON.parse(item.headings) as string[] })),
       ...noteResults.map((item) => ({ kind: "note" as const, ...item, tags: noteTags.filter((tag) => tag.noteId === item.id).map((tag) => tag.tag) }))
-    ] };
+    ];
+    if (directResults.length || !/[\p{Script=Hangul}]/u.test(query)) return { results: directResults };
+    const grams = koreanNgrams(query).join(" AND ");
+    if (!grams) return { results: [] };
+    const documents = database.prepare("SELECT d.title, d.url, d.headings, d.indexed_at AS indexedAt, snippet(document_search, 3, '<b>', '</b>', '...', 18) AS preview FROM document_ngrams n JOIN documents d ON d.url = n.url JOIN document_search ON document_search.url = d.url WHERE document_ngrams MATCH ? LIMIT 50").all(grams) as Array<{ title: string; url: string; headings: string; indexedAt: string; preview: string }>;
+    const notes = database.prepare("SELECT n.id, n.quote, n.body, n.source_url AS url, n.source_title AS title, n.created_at AS indexedAt, snippet(note_search, -1, '<b>', '</b>', '...', 18) AS preview FROM note_ngrams g JOIN notes n ON n.id = g.note_id JOIN note_search ON note_search.note_id = n.id WHERE note_ngrams MATCH ? LIMIT 50").all(grams) as Array<{ id: number; quote: string; body: string; title: string; url: string; indexedAt: string; preview: string }>;
+    return { results: [...documents.map((item) => ({ kind: "document" as const, ...item, headings: JSON.parse(item.headings) as string[] })), ...notes.map((item) => ({ kind: "note" as const, ...item, tags: noteTags.filter((tag) => tag.noteId === item.id).map((tag) => tag.tag) }))] };
   } catch { return { results: [], error: "검색식 형식을 확인하세요. AND, OR, NOT, 괄호, 따옴표를 사용할 수 있습니다." }; }
 }
 
@@ -247,12 +335,32 @@ function createWindow() {
     width: 1440, height: 920, minWidth: 920, minHeight: 600,
     backgroundColor: "#f4f0e8",
     titleBarStyle: "hidden",
-    webPreferences: { preload: join(__dirname, "preload.js"), webviewTag: true, contextIsolation: true, sandbox: false }
+    webPreferences: {
+      preload: join(__dirname, "preload.js"),
+      webviewTag: true,
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      webSecurity: true
+    }
   });
   win.loadFile(join(__dirname, "..", "src", "renderer", "index.html"));
 }
 
 app.whenReady().then(() => {
+  // The app shell is local-only; guest webviews may browse only normal web URLs
+  // and must never create an untracked native window.
+  app.on("web-contents-created", (_event, contents) => {
+    contents.setWindowOpenHandler(() => ({ action: "deny" }));
+    if (contents.getType() === "webview") {
+      contents.on("will-navigate", (event, target) => {
+        try {
+          if (!/^https?:$/.test(new URL(target).protocol)) event.preventDefault();
+        } catch { event.preventDefault(); }
+      });
+    }
+  });
+  configureGuestSession();
   initializeSearchIndex();
   ipcMain.handle("state:load", () => loadState());
   ipcMain.handle("session:load", () => loadSession());

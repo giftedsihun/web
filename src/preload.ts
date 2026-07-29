@@ -18,7 +18,8 @@ contextBridge.exposeInMainWorld("browserStore", {
   updateNote: (note: { id: number; body: string; tags: string[] }) => ipcRenderer.invoke("notes:update", note),
   deleteNote: (id: number) => ipcRenderer.invoke("notes:delete", id),
   exportBackup: () => ipcRenderer.invoke("backup:export"),
-  importBackup: () => ipcRenderer.invoke("backup:import")
+  importBackup: () => ipcRenderer.invoke("backup:import"),
+  onDownloadUpdate: (listener: (download: { id: string; name: string; state: "starting" | "progressing" | "complete" | "cancelled" | "interrupted"; received: number; total: number; path?: string }) => void) => { const handler = (_event: Electron.IpcRendererEvent, download: Parameters<typeof listener>[0]) => listener(download); ipcRenderer.on("download:updated", handler); return () => ipcRenderer.removeListener("download:updated", handler); }
 });
 
 contextBridge.exposeInMainWorld("windowControls", {

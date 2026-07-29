@@ -9,6 +9,8 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="app.css">
   <link rel="stylesheet" href="features.css">
+  <link rel="stylesheet" href="enhancements.css">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; img-src 'self' https: data:; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self'; base-uri 'none'; form-action 'self'">
 </head>
 <body>
   <main class="shell" id="shell">
@@ -20,7 +22,7 @@
     <nav class="nav">
       <button id="back" title="뒤로" aria-label="뒤로">←</button><button id="forward" title="앞으로" aria-label="앞으로">→</button><button id="reload" title="새로고침" aria-label="새로고침">↻</button>
       <form id="address-form"><span class="address-lock">⌕</span><input id="address" autocomplete="off" spellcheck="false" placeholder="검색하거나 웹 주소 입력" /></form>
-      <button id="bookmark" title="북마크" aria-label="북마크">☆</button><button id="toggle-side" class="atlas-toggle" title="Atlas 도구" aria-label="Atlas 도구">ATLAS</button>
+      <button id="find-page" title="페이지에서 찾기 (Ctrl+F)" aria-label="페이지에서 찾기">⌕</button><button id="zoom-out" title="축소" aria-label="축소">−</button><button id="zoom-reset" title="확대/축소 초기화" aria-label="확대/축소 초기화">100%</button><button id="zoom-in" title="확대" aria-label="확대">+</button><button id="bookmark" title="북마크" aria-label="북마크">☆</button><button id="toggle-side" class="atlas-toggle" title="Atlas 도구" aria-label="Atlas 도구">ATLAS</button>
     </nav>
     <section class="workspace">
       <aside class="side" aria-label="Atlas 도구">
@@ -43,7 +45,8 @@
         <div id="views" class="views"></div>
       </section>
     </section>
-    <footer><span id="status"><i></i> READY</span><span id="page-info">0 PAGES IN ATLAS</span></footer>
+    <section id="find-bar" class="find-bar" role="search" aria-label="페이지에서 찾기" hidden><input id="find-query" type="search" placeholder="페이지에서 찾기" autocomplete="off" /><span id="find-count">0 / 0</span><button id="find-previous" type="button" title="이전 결과">↑</button><button id="find-next" type="button" title="다음 결과">↓</button><button id="find-close" type="button" aria-label="찾기 닫기">×</button></section>
+    <footer><span id="status"><i></i> READY</span><span id="download-status" title="다운로드 상태"></span><span id="page-info">0 PAGES IN ATLAS</span></footer>
   </main>
   <dialog id="note-dialog"><form id="note-form" method="dialog"><div class="note-dialog-head"><p class="eyebrow" id="note-mode">CAPTURE A THOUGHT</p><button type="button" id="close-note" aria-label="닫기">×</button></div><h2>지식 노트</h2><blockquote id="note-quote"></blockquote><label>메모<textarea id="note-body" rows="4" placeholder="이 문장이 왜 중요한가요?"></textarea></label><label>태그 <small>쉼표로 구분</small><input id="note-tags" placeholder="예: 디자인, 아이디어" /></label><div class="note-form-actions"><button type="button" id="delete-note" class="delete-note">삭제</button><button class="save-note" value="save">저장</button></div></form></dialog>
   <script src="../../build/renderer/app.js"></script>
