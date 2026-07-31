@@ -4,6 +4,8 @@ Electron and TypeScript browser MVP that uses Chromium's `webview` for navigatio
 
 Project-wide implementation status, constraints, and roadmap: [PROJECT_STATUS_KO.md](PROJECT_STATUS_KO.md)
 
+Project file map, implemented features, configuration notes, and next plans: [PROJECT_GUIDE_KO.md](PROJECT_GUIDE_KO.md)
+
 The earlier local-browser MVP overview is retained in [ATLAS_OVERVIEW_KO.md](ATLAS_OVERVIEW_KO.md).
 
 ## Run
