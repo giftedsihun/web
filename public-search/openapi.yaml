@@ -51,7 +51,13 @@ paths:
           schema: { type: string, enum: [relevance, newest], default: relevance }
         - name: domain
           in: query
-          schema: { type: string, example: example.com }
+           schema: { type: string, example: example.com }
+        - name: language
+          in: query
+          schema: { type: string, enum: [ko, en, ja, zh, other] }
+        - name: documentType
+          in: query
+          schema: { type: string, enum: [html, xhtml] }
         - name: from
           in: query
           description: Inclusive indexed date, YYYY-MM-DD.
@@ -124,7 +130,7 @@ paths:
       summary: Get crawl job and frontier summary
       parameters: [{ $ref: '#/components/parameters/CrawlId' }]
       responses:
-        '200': { description: Crawl job and frontier progress. }
+        '200': { description: Crawl job and frontier progress, including retry and active lease counts with their next expiry times. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
     delete:
@@ -161,7 +167,7 @@ paths:
     get:
       tags: [Crawls]
       security: [{ bearerAuth: [] }]
-      summary: List frontier entries for a crawl
+      summary: List frontier entries for a crawl, including persisted failure type, message, and timestamp
       parameters:
         - $ref: '#/components/parameters/CrawlId'
         - $ref: '#/components/parameters/Page'
@@ -176,6 +182,18 @@ paths:
       summary: Retry failed frontier entries in a terminal crawl
       parameters: [{ $ref: '#/components/parameters/CrawlId' }]
       responses: { '202': { description: Retry accepted. }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { description: Retry unavailable. } }
+  /v1/crawls/{id}/pages/diagnostic:
+    get:
+      tags: [Crawls]
+      security: [{ bearerAuth: [] }]
+      summary: Inspect canonical and duplicate-cluster outcome for a crawled page
+      parameters:
+        - $ref: '#/components/parameters/CrawlId'
+        - name: url
+          in: query
+          required: true
+          schema: { type: string, format: uri }
+      responses: { '200': { description: Page canonicalization and deduplication diagnostic. }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
   /v1/crawls/{id}/schedule:
     post:
       tags: [Crawls]
@@ -193,7 +211,40 @@ paths:
       tags: [Administration]
       security: [{ bearerAuth: [] }]
       summary: Get index and crawler statistics
-      responses: { '200': { description: Current statistics. }, '401': { $ref: '#/components/responses/Unauthorized' } }
+       responses: { '200': { description: Current statistics. }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /v1/admin/metrics:
+    get:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: Get bounded operational metrics snapshot
+      description: Returns database size plus document language/type, crawl lifecycle, frontier, retry, and terminal failure counters. Requires the administrator bearer token and does not expose URL-level data.
+      responses: { '200': { description: Operational metrics snapshot. }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /v1/admin/backup:
+    post:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: Create a consistent SQLite backup snapshot
+      description: Writes a generated single-file SQLite backup to PUBLIC_SEARCH_BACKUP_DIR, or to a backups directory beside the database. The response returns only generated metadata, not a filesystem path.
+       responses: { '201': { description: Backup created. }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /v1/admin/backups:
+    get:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: List generated SQLite backup snapshots
+      description: Returns generated filename, size, and modification time only. Filesystem paths are never exposed.
+      responses: { '200': { description: Backup inventory. }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /v1/admin/backups/verify:
+    post:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: Verify a backup without restoring it
+      description: Opens one generated backup read-only, runs SQLite integrity_check, confirms its schema compatibility, and reports bounded record counts. It never replaces the live database.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [file], properties: { file: { type: string, pattern: '^public-search-[A-Za-z0-9_-]+\\.sqlite$' } } }
+      responses: { '200': { description: Backup verification result. }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
   /v1/admin/retention:
     post:
       tags: [Administration]
@@ -265,6 +316,29 @@ paths:
           application/json:
             schema: { type: object, required: [domain], properties: { domain: { type: string }, dryRun: { type: boolean, default: true } } }
       responses: { '200': { description: Deletion result or preview. }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /v1/admin/domain-blocks:
+    get:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: List domains blocked from crawling and indexing
+      responses: { '200': { description: Active domain blocks. }, '401': { $ref: '#/components/responses/Unauthorized' } }
+    post:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: Block a domain and remove its indexed documents
+      description: Cancels matching active crawl jobs, removes the domain's documents and frontier entries, and prevents future crawl submissions until unblocked. The request is recorded in the audit log.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [domain], properties: { domain: { type: string }, reason: { type: string, maxLength: 300 } } }
+      responses: { '200': { description: Domain blocked and removal applied. }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+    delete:
+      tags: [Administration]
+      security: [{ bearerAuth: [] }]
+      summary: Remove a domain crawl block
+      parameters: [{ name: domain, in: query, required: true, schema: { type: string } }]
+      responses: { '200': { description: Domain block removed. }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
   /v1/admin/audit:
     get:
       tags: [Administration]
@@ -298,7 +372,16 @@ components:
         maxPages: { type: integer, minimum: 1, maximum: 1000, default: 100 }
         allowedHosts: { type: array, items: { type: string }, maxItems: 50 }
         recrawlMinutes: { type: integer, minimum: 15 }
-        crawlPolicy: { type: object, additionalProperties: true }
+        crawlPolicy: { $ref: '#/components/schemas/CrawlPolicy' }
+    CrawlPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        maxDepth: { type: integer, minimum: 0, maximum: 20 }
+        requestIntervalMs: { type: integer, minimum: 1000, maximum: 120000, description: Minimum delay between requests to a host for this crawl job. }
+        includePatterns: { type: array, maxItems: 20, items: { type: string, maxLength: 120 } }
+        excludePatterns: { type: array, maxItems: 20, items: { type: string, maxLength: 120 } }
+        allowedContentTypes: { type: array, minItems: 1, items: { type: string, enum: [text/html, application/xhtml+xml] } }
     CrawlJob:
       type: object
       required: [id, seedUrl, maxPages, allowedHosts, status, indexed, skipped, failed, createdAt, updatedAt]
@@ -307,11 +390,42 @@ components:
         seedUrl: { type: string, format: uri }
         maxPages: { type: integer }
         allowedHosts: { type: array, items: { type: string } }
+        policy: { $ref: '#/components/schemas/CrawlPolicy' }
         status: { $ref: '#/components/schemas/CrawlStatus' }
         indexed: { type: integer }
         skipped: { type: integer }
         failed: { type: integer }
         createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    FrontierEntry:
+      type: object
+      required: [url, state, attempts, host, depth, availableAt, discoveredAt]
+      properties:
+        url: { type: string, format: uri }
+        state: { type: string, enum: [queued, processing, fetched, failed] }
+        attempts: { type: integer, minimum: 0 }
+        host: { type: string }
+        depth: { type: integer, minimum: 0 }
+        availableAt: { type: integer, format: int64, description: Unix epoch milliseconds; deferred retry becomes eligible at this time. }
+        discoveredAt: { type: string, format: date-time }
+        lastError: { type: string, nullable: true }
+        failureType: { type: string, nullable: true, enum: [dns, connection, timeout, http_429, http_5xx, unknown] }
+        lastFailedAt: { type: string, nullable: true, format: date-time }
+        leaseOwner: { type: string, nullable: true, description: Opaque crawler worker identifier holding this URL. }
+        leaseExpiresAt: { type: integer, nullable: true, format: int64, description: Unix epoch milliseconds when the processing lease expires. }
+        heartbeatAt: { type: string, nullable: true, format: date-time }
+    CrawlPageDiagnostic:
+      type: object
+      required: [url, host, noindex, nofollow, canonicalOutcome, indexed, updatedAt]
+      properties:
+        url: { type: string, format: uri }
+        host: { type: string }
+        noindex: { type: boolean }
+        nofollow: { type: boolean }
+        canonicalUrl: { type: string, nullable: true, format: uri }
+        canonicalOutcome: { type: string, enum: [none, accepted, rejected] }
+        duplicateOf: { type: string, nullable: true, format: uri }
+        indexed: { type: boolean }
         updatedAt: { type: string, format: date-time }
     SearchResponse:
       type: object
@@ -320,12 +434,14 @@ components:
         query: { type: string }
         sort: { type: string, enum: [relevance, newest] }
         domain: { type: string, nullable: true }
+        language: { type: string, nullable: true, enum: [ko, en, ja, zh, other] }
+        documentType: { type: string, nullable: true, enum: [html, xhtml] }
         page: { type: integer }
         pageSize: { type: integer, example: 20 }
         total: { type: integer }
         totalPages: { type: integer }
         results:
           type: array
-          items: { type: object, required: [title, url, preview, indexedAt, score], properties: { title: { type: string }, url: { type: string, format: uri }, preview: { type: string }, indexedAt: { type: string, format: date-time }, score: { type: number } } }
+          items: { type: object, required: [title, url, preview, indexedAt, score], properties: { title: { type: string }, url: { type: string, format: uri }, preview: { type: string }, indexedAt: { type: string, format: date-time }, score: { type: number, description: Relevance score combining weighted FTS field matches, URL match, bounded freshness, capped indexed in-link authority, and content-quality adjustments; not comparable across different queries. } } }
         facets: { type: object }
         source: { type: string, example: atlas-public-starter }

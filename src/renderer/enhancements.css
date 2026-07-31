@@ -9,6 +9,7 @@
 @keyframes atlas-spin { to { transform: rotate(360deg); } }
 @media (max-width: 720px) { .search-filter-bar { grid-template-columns: 1fr 1fr; } .search-filter-bar input:first-child { grid-column: 1 / -1; } }
 .find-bar { position: fixed; z-index: 20; top: 137px; right: 20px; display: flex; align-items: center; gap: 5px; width: min(410px, calc(100vw - 40px)); padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; box-shadow: var(--shadow); }
+.find-bar[hidden] { display: none; }
 .find-bar input { min-width: 0; flex: 1; padding: 7px 8px; border: 1px solid var(--line); border-radius: 4px; outline-color: var(--blue); }
 .find-bar span { min-width: 42px; color: var(--muted); font: 10px "DM Mono", monospace; text-align: center; }
 .find-bar button { width: 27px; height: 27px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: #fff; cursor: pointer; }

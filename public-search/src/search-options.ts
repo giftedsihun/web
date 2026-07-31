@@ -1,4 +1,6 @@
 export type SearchSort = "relevance" | "newest";
+export type SearchLanguage = "ko" | "en" | "ja" | "zh" | "other";
+export type SearchDocumentType = "html" | "xhtml";
 export class SearchOptionsError extends Error {}
 
 export function normalizeSearchSort(value: string | null): SearchSort {
@@ -12,6 +14,18 @@ export function normalizeSearchDomain(value: string | null) {
   const domain = value.trim().toLowerCase();
   if (!domain || domain.length > 253 || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(domain)) throw new SearchOptionsError("domain must be a valid hostname.");
   return domain;
+}
+
+export function normalizeSearchLanguage(value: string | null): SearchLanguage | undefined {
+  if (!value) return undefined;
+  if (["ko", "en", "ja", "zh", "other"].includes(value)) return value as SearchLanguage;
+  throw new SearchOptionsError("language must be ko, en, ja, zh, or other.");
+}
+
+export function normalizeSearchDocumentType(value: string | null): SearchDocumentType | undefined {
+  if (!value) return undefined;
+  if (value === "html" || value === "xhtml") return value;
+  throw new SearchOptionsError("documentType must be html or xhtml.");
 }
 
 export function normalizeSearchDate(value: string | null, name: "from" | "to") {

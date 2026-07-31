@@ -24,6 +24,7 @@ async function waitForServer(baseUrl, child) {
 test("public API routes enforce HTTP authentication, validation, and CORS", async () => {
   const port = 20_000 + Math.floor(Math.random() * 20_000);
   const database = join(tmpdir(), `atlas-public-api-${randomUUID()}.sqlite`);
+  const backupDirectory = join(tmpdir(), `atlas-public-backups-${randomUUID()}`);
   const baseUrl = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ["dist/public-search/server.js"], {
     cwd: process.cwd(),
@@ -31,6 +32,7 @@ test("public API routes enforce HTTP authentication, validation, and CORS", asyn
       ...process.env,
       PUBLIC_SEARCH_PORT: String(port),
       PUBLIC_SEARCH_DB: database,
+      PUBLIC_SEARCH_BACKUP_DIR: backupDirectory,
       PUBLIC_SEARCH_ADMIN_TOKEN: "integration-token",
       PUBLIC_SEARCH_CORS_ORIGINS: "https://app.example.test",
     },
@@ -58,6 +60,13 @@ test("public API routes enforce HTTP authentication, validation, and CORS", asyn
     const filteredQuery = await fetch(`${baseUrl}/v1/search?q=atlas&sort=newest&domain=example.test`, { headers: origin });
     assert.equal(filteredQuery.status, 200);
     assert.equal((await filteredQuery.json()).sort, "newest");
+    const metadataFilter = await fetch(`${baseUrl}/v1/search?q=atlas&language=ko&documentType=xhtml`, { headers: origin });
+    assert.equal(metadataFilter.status, 200);
+    const metadataBody = await metadataFilter.json();
+    assert.equal(metadataBody.language, "ko");
+    assert.equal(metadataBody.documentType, "xhtml");
+    const invalidLanguage = await fetch(`${baseUrl}/v1/search?q=atlas&language=fr`, { headers: origin });
+    assert.equal(invalidLanguage.status, 400);
 
     const wrongMediaType = await fetch(`${baseUrl}/v1/crawls`, {
       method: "POST",
@@ -69,17 +78,55 @@ test("public API routes enforce HTTP authentication, validation, and CORS", asyn
     const created = await fetch(`${baseUrl}/v1/crawls`, {
       method: "POST",
       headers: { ...origin, authorization: "Bearer integration-token", "content-type": "application/json" },
-      body: JSON.stringify({ seedUrl: "https://crawl-test.invalid", maxPages: 1, crawlPolicy: { maxDepth: 1, excludePatterns: ["*/logout*"] } }),
+      body: JSON.stringify({ seedUrl: "https://crawl-test.invalid", maxPages: 1, allowedHosts: ["docs.crawl-test.invalid"], crawlPolicy: { maxDepth: 1, requestIntervalMs: 5_000, excludePatterns: ["*/logout*"] } }),
     });
     assert.equal(created.status, 202);
     const job = await created.json();
     assert.equal(job.maxPages, 1);
-    assert.deepEqual(job.allowedHosts, ["crawl-test.invalid"]);
+    assert.deepEqual(job.allowedHosts, ["crawl-test.invalid", "docs.crawl-test.invalid"]);
     assert.equal(job.policy.maxDepth, 1);
+    assert.equal(job.policy.requestIntervalMs, 5_000);
 
     const stats = await fetch(`${baseUrl}/v1/admin/stats`, { headers: { ...origin, authorization: "Bearer integration-token" } });
     assert.equal(stats.status, 200);
     assert.equal((await stats.json()).jobs, 1);
+    const noMetricsToken = await fetch(`${baseUrl}/v1/admin/metrics`, { headers: origin });
+    assert.equal(noMetricsToken.status, 401);
+    const metrics = await fetch(`${baseUrl}/v1/admin/metrics`, { headers: { ...origin, authorization: "Bearer integration-token" } });
+    assert.equal(metrics.status, 200);
+    const metricsBody = await metrics.json();
+    assert.equal(typeof metricsBody.generatedAt, "string");
+    assert.equal(metricsBody.jobs.total, 1);
+    assert.equal(metricsBody.frontier.total, 1);
+    assert.equal(metricsBody.database.schemaVersion, 1);
+    assert.deepEqual(metricsBody.documents.languages, []);
+    const noBackupToken = await fetch(`${baseUrl}/v1/admin/backup`, { method: "POST", headers: origin });
+    assert.equal(noBackupToken.status, 401);
+    const backup = await fetch(`${baseUrl}/v1/admin/backup`, { method: "POST", headers: { ...origin, authorization: "Bearer integration-token" } });
+    assert.equal(backup.status, 201);
+    const backupBody = await backup.json();
+    assert.match(backupBody.file, /^public-search-.*\.sqlite$/);
+    assert.ok(backupBody.bytes > 0);
+    const noBackupListToken = await fetch(`${baseUrl}/v1/admin/backups`, { headers: origin });
+    assert.equal(noBackupListToken.status, 401);
+    const backupList = await fetch(`${baseUrl}/v1/admin/backups`, { headers: { ...origin, authorization: "Bearer integration-token" } });
+    assert.equal(backupList.status, 200);
+    const backups = await backupList.json();
+    assert.equal(backups.backups[0].file, backupBody.file);
+    assert.ok(backups.backups[0].modifiedAt);
+    const verified = await fetch(`${baseUrl}/v1/admin/backups/verify`, { method: "POST", headers: { ...origin, authorization: "Bearer integration-token", "content-type": "application/json" }, body: JSON.stringify({ file: backupBody.file }) });
+    assert.equal(verified.status, 200);
+    const verification = await verified.json();
+    assert.equal(verification.file, backupBody.file);
+    assert.equal(verification.bytes, backupBody.bytes);
+    assert.equal(verification.modifiedAt, backups.backups[0].modifiedAt);
+    assert.equal(verification.integrity, "ok");
+    assert.equal(verification.schemaVersion, 1);
+    assert.equal(verification.compatible, true);
+    assert.deepEqual({ documents: verification.documents, jobs: verification.jobs, frontier: verification.frontier, domainBlocks: verification.domainBlocks }, { documents: 0, jobs: 1, frontier: 1, domainBlocks: 0 });
+    assert.equal(typeof verification.verifiedAt, "string");
+    const invalidBackup = await fetch(`${baseUrl}/v1/admin/backups/verify`, { method: "POST", headers: { ...origin, authorization: "Bearer integration-token", "content-type": "application/json" }, body: JSON.stringify({ file: "../public-search.sqlite" }) });
+    assert.equal(invalidBackup.status, 400);
     const invalidRetention = await fetch(`${baseUrl}/v1/admin/retention`, { method: "POST", headers: { ...origin, authorization: "Bearer integration-token", "content-type": "application/json" }, body: JSON.stringify({ before: "not-a-date" }) });
     assert.equal(invalidRetention.status, 400);
     assert.equal((await invalidRetention.json()).error, "before must be a valid ISO date.");
@@ -156,6 +203,19 @@ test("public API routes enforce HTTP authentication, validation, and CORS", asyn
     const invalidStatus = await fetch(`${baseUrl}/v1/crawls?status=stopped`, { headers: { ...origin, authorization: "Bearer integration-token" } });
     assert.equal(invalidStatus.status, 400);
 
+    const noBlockToken = await fetch(`${baseUrl}/v1/admin/domain-blocks`, { method: "POST", headers: { ...origin, "content-type": "application/json" }, body: JSON.stringify({ domain: "crawl-test.invalid" }) });
+    assert.equal(noBlockToken.status, 401);
+    const blocked = await fetch(`${baseUrl}/v1/admin/domain-blocks`, { method: "POST", headers: { ...origin, authorization: "Bearer integration-token", "content-type": "application/json" }, body: JSON.stringify({ domain: "crawl-test.invalid", reason: "Operator removal request" }) });
+    assert.equal(blocked.status, 200);
+    assert.deepEqual(await blocked.json(), { domain: "crawl-test.invalid", reason: "Operator removal request", documents: 0, frontier: 1 });
+    const blocks = await fetch(`${baseUrl}/v1/admin/domain-blocks`, { headers: { ...origin, authorization: "Bearer integration-token" } });
+    assert.equal(blocks.status, 200);
+    assert.equal((await blocks.json()).blocks[0].domain, "crawl-test.invalid");
+    const blockedSubmission = await fetch(`${baseUrl}/v1/crawls`, { method: "POST", headers: { ...origin, authorization: "Bearer integration-token", "content-type": "application/json" }, body: JSON.stringify({ seedUrl: "https://crawl-test.invalid", maxPages: 1 }) });
+    assert.equal(blockedSubmission.status, 400);
+    const unblocked = await fetch(`${baseUrl}/v1/admin/domain-blocks?domain=crawl-test.invalid`, { method: "DELETE", headers: { ...origin, authorization: "Bearer integration-token" } });
+    assert.deepEqual(await unblocked.json(), { domain: "crawl-test.invalid", blocked: false });
+
     const preflight = await fetch(`${baseUrl}/v1/search`, { method: "OPTIONS", headers: { ...origin, "access-control-request-method": "GET" } });
     assert.equal(preflight.status, 204);
     assert.equal(preflight.headers.get("access-control-allow-methods"), "GET, POST, DELETE, OPTIONS");
@@ -167,5 +227,6 @@ test("public API routes enforce HTTP authentication, validation, and CORS", asyn
     rmSync(database, { force: true });
     rmSync(`${database}-shm`, { force: true });
     rmSync(`${database}-wal`, { force: true });
+    rmSync(backupDirectory, { recursive: true, force: true });
   }
 });

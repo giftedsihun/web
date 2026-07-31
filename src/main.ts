@@ -1,18 +1,24 @@
 import { app, BrowserWindow, dialog, ipcMain, session } from "electron";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { fork, type ChildProcess } from "node:child_process";
 import { lookup } from "node:dns/promises";
-import { join } from "node:path";
+import { randomBytes } from "node:crypto";
+import { createServer } from "node:net";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { clampCrawlLimit, isPublicIpAddress, isSafeCrawlerUrl, koreanNgrams, normalizeSession, noteImportKey } from "./core";
 import { MAX_DOCUMENT_BYTES, MAX_ROBOTS_BYTES, MAX_SITEMAP_BYTES, readCrawlResponseText } from "./crawl-response";
 
 type LinkItem = { title: string; url: string };
 type IndexedDocument = { title: string; url: string; text: string; headings: string[]; links: LinkItem[]; indexedAt: string };
-type SavedState = { bookmarks: Bookmark[]; history: HistoryItem[]; documents: IndexedDocument[] };
+type SavedState = { bookmarks: Bookmark[]; readingList?: ReadingItem[]; savedSearches?: SavedSearch[]; searchHistory?: SearchHistoryItem[]; history: HistoryItem[]; documents: IndexedDocument[] };
 type SessionTab = { title: string; url: string; closedAt?: string };
 type TabSession = { tabs: SessionTab[]; activeUrl: string; recentlyClosed: SessionTab[] };
 type Bookmark = { title: string; url: string; createdAt: string };
 type HistoryItem = { title: string; url: string; visitedAt: string };
+type ReadingItem = { title: string; url: string; savedAt: string };
+type SavedSearch = { query: string; savedAt: string };
+type SearchHistoryItem = { query: string; searchedAt: string };
 type GraphDocument = { title: string; url: string; indexedAt: string; links: LinkItem[] };
 type Note = { id: number; quote: string; body: string; tags: string[]; sourceUrl: string; sourceTitle: string; createdAt: string };
 type NoteInput = Omit<Note, "id" | "createdAt">;
@@ -28,6 +34,8 @@ type CrawlJob = { cancelled: boolean; controller: AbortController };
 
 let database: DatabaseSync;
 const crawlJobs = new Map<string, CrawlJob>();
+let publicSearchProcess: ChildProcess | undefined;
+let publicSearchConfig: { endpoint: string; adminToken: string } | undefined;
 
 type DownloadStatus = { id: string; name: string; state: "starting" | "progressing" | "complete" | "cancelled" | "interrupted"; received: number; total: number; path?: string };
 
@@ -58,10 +66,32 @@ function configureGuestSession() {
 const statePath = () => join(app.getPath("userData"), "knowledge-browser.json");
 const loadState = (): SavedState => {
   try { return JSON.parse(readFileSync(statePath(), "utf8")) as SavedState; }
-  catch { return { bookmarks: [], history: [], documents: [] }; }
+  catch { return { bookmarks: [], readingList: [], savedSearches: [], searchHistory: [], history: [], documents: [] }; }
 };
 const saveState = (state: SavedState) => writeFileSync(statePath(), JSON.stringify(state, null, 2));
 const sessionPath = () => join(app.getPath("userData"), "atlas-tabs.json");
+const publicSearchTokenPath = () => join(app.getPath("userData"), "public-search-admin-token");
+type SupabaseConfig = { url: string; anonKey: string };
+const environmentFiles = () => [...new Set([
+  join(app.getAppPath(), ".env"),
+  join(process.cwd(), ".env"),
+  join(process.resourcesPath, ".env"),
+  join(dirname(process.execPath), ".env"),
+])];
+const environmentValue = (name: string) => {
+  if (process.env[name]) return process.env[name];
+  for (const file of environmentFiles()) {
+    try {
+      const line = readFileSync(file, "utf8").split(/\r?\n/).find((value) => value.trimStart().startsWith(`${name}=`));
+      if (line) return line.slice(line.indexOf("=") + 1).trim().replace(/^(["'])(.*)\1$/, "$2");
+    } catch { /* Try the next supported configuration location. */ }
+  }
+  return undefined;
+};
+const supabaseConfig = (): SupabaseConfig | undefined => {
+  const url = environmentValue("SUPABASE_URL"); const anonKey = environmentValue("SUPABASE_ANON_KEY") || environmentValue("SUPABASE_PUBLISHABLE_KEY");
+  return url && anonKey && /^https:\/\/[^.]+\.supabase\.co$/.test(url) ? { url, anonKey } : undefined;
+};
 const emptySession = (): TabSession => ({ tabs: [], activeUrl: "", recentlyClosed: [] });
 const loadSession = (): TabSession => {
   try {
@@ -72,6 +102,53 @@ const saveSession = (session: TabSession) => writeFileSync(sessionPath(), JSON.s
   tabs: session.tabs.slice(0, 20), activeUrl: session.activeUrl,
   recentlyClosed: session.recentlyClosed.slice(0, 20)
 }, null, 2));
+
+async function availableLoopbackPort() {
+  return new Promise<number>((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close((error) => error ? reject(error) : resolve(typeof address === "object" && address ? address.port : 8787));
+    });
+  });
+}
+
+async function waitForPublicSearch(endpoint: string) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try { if ((await fetch(`${endpoint}/ready`, { signal: AbortSignal.timeout(500) })).ok) return; }
+    catch { /* The child process is still initializing. */ }
+    await new Promise((resolve) => setTimeout(resolve, 75));
+  }
+  throw new Error("Timed out waiting for bundled public-search.");
+}
+
+async function startBundledPublicSearch() {
+  const token = existsSync(publicSearchTokenPath())
+    ? readFileSync(publicSearchTokenPath(), "utf8").trim()
+    : randomBytes(32).toString("base64url");
+  if (!existsSync(publicSearchTokenPath())) writeFileSync(publicSearchTokenPath(), token, { mode: 0o600 });
+  const port = await availableLoopbackPort();
+  const script = join(__dirname, "public-search", "server.js");
+  publicSearchProcess = fork(script, [], {
+    execPath: process.execPath,
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: "1",
+      PUBLIC_SEARCH_PORT: String(port),
+      PUBLIC_SEARCH_DB: join(app.getPath("userData"), "public-search.sqlite"),
+      PUBLIC_SEARCH_BACKUP_DIR: join(app.getPath("userData"), "public-search-backups"),
+      PUBLIC_SEARCH_ADMIN_TOKEN: token,
+      PUBLIC_SEARCH_CORS_ORIGINS: "",
+    },
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+  });
+  const endpoint = `http://127.0.0.1:${port}`;
+  publicSearchProcess.once("exit", () => { publicSearchProcess = undefined; });
+  await waitForPublicSearch(endpoint);
+  publicSearchConfig = { endpoint, adminToken: token };
+}
 
 function initializeSearchIndex() {
   database = new DatabaseSync(join(app.getPath("userData"), "atlas-search.sqlite"));
@@ -297,13 +374,15 @@ function importBackup(data: BackupData) {
   data.documents.filter((document): document is IndexedDocument => !!document && typeof document.url === "string" && typeof document.title === "string" && typeof document.text === "string" && Array.isArray(document.headings) && Array.isArray(document.links)).forEach(indexDocument);
   const existingNotes = new Set(getNotes().map((note) => noteImportKey(note.sourceUrl, note.quote, note.body)));
   data.notes.filter((note) => !!note && typeof note.quote === "string" && typeof note.sourceUrl === "string").forEach((note) => { const body = typeof note.body === "string" ? note.body : ""; const key = noteImportKey(note.sourceUrl, note.quote, body); if (!existingNotes.has(key)) { saveNote({ quote: note.quote, body, tags: Array.isArray(note.tags) ? note.tags : [], sourceUrl: note.sourceUrl, sourceTitle: typeof note.sourceTitle === "string" ? note.sourceTitle : note.sourceUrl }); existingNotes.add(key); } });
-  if (data.state && Array.isArray(data.state.bookmarks) && Array.isArray(data.state.history)) saveState({ bookmarks: data.state.bookmarks, history: data.state.history, documents: [] });
+  if (data.state && Array.isArray(data.state.bookmarks) && Array.isArray(data.state.history)) saveState({ bookmarks: data.state.bookmarks, readingList: Array.isArray(data.state.readingList) ? data.state.readingList : [], savedSearches: Array.isArray(data.state.savedSearches) ? data.state.savedSearches : [], searchHistory: Array.isArray(data.state.searchHistory) ? data.state.searchHistory : [], history: data.state.history, documents: [] });
   if (data.session && Array.isArray(data.session.tabs) && Array.isArray(data.session.recentlyClosed)) saveSession(data.session);
   return { documents: documentCount(), notes: getNotes().length };
 }
 
-function searchDocuments(query: string): { results: SearchResult[]; error?: string } {
-  if (!query.trim()) return { results: [] };
+function searchDocuments(query: string, page = 1, pageSize = 20): { results: SearchResult[]; total: number; page: number; pageSize: number; totalPages: number; error?: string } {
+  const safePage = Math.max(1, Math.floor(page) || 1); const safePageSize = Math.min(50, Math.max(1, Math.floor(pageSize) || 20));
+  const resultPage = (results: SearchResult[]) => ({ results: results.slice((safePage - 1) * safePageSize, safePage * safePageSize), total: results.length, page: safePage, pageSize: safePageSize, totalPages: Math.max(Math.ceil(results.length / safePageSize), 1) });
+  if (!query.trim()) return resultPage([]);
   try {
     const documentResults = database.prepare(`
       SELECT d.title, d.url, d.headings, d.indexed_at AS indexedAt, snippet(document_search, 3, '<b>', '</b>', '...', 18) AS preview
@@ -321,13 +400,13 @@ function searchDocuments(query: string): { results: SearchResult[]; error?: stri
       ...documentResults.map((item) => ({ kind: "document" as const, ...item, headings: JSON.parse(item.headings) as string[] })),
       ...noteResults.map((item) => ({ kind: "note" as const, ...item, tags: noteTags.filter((tag) => tag.noteId === item.id).map((tag) => tag.tag) }))
     ];
-    if (directResults.length || !/[\p{Script=Hangul}]/u.test(query)) return { results: directResults };
+    if (directResults.length || !/[\p{Script=Hangul}]/u.test(query)) return resultPage(directResults);
     const grams = koreanNgrams(query).join(" AND ");
-    if (!grams) return { results: [] };
+    if (!grams) return resultPage([]);
     const documents = database.prepare("SELECT d.title, d.url, d.headings, d.indexed_at AS indexedAt, snippet(document_search, 3, '<b>', '</b>', '...', 18) AS preview FROM document_ngrams n JOIN documents d ON d.url = n.url JOIN document_search ON document_search.url = d.url WHERE document_ngrams MATCH ? LIMIT 50").all(grams) as Array<{ title: string; url: string; headings: string; indexedAt: string; preview: string }>;
     const notes = database.prepare("SELECT n.id, n.quote, n.body, n.source_url AS url, n.source_title AS title, n.created_at AS indexedAt, snippet(note_search, -1, '<b>', '</b>', '...', 18) AS preview FROM note_ngrams g JOIN notes n ON n.id = g.note_id JOIN note_search ON note_search.note_id = n.id WHERE note_ngrams MATCH ? LIMIT 50").all(grams) as Array<{ id: number; quote: string; body: string; title: string; url: string; indexedAt: string; preview: string }>;
-    return { results: [...documents.map((item) => ({ kind: "document" as const, ...item, headings: JSON.parse(item.headings) as string[] })), ...notes.map((item) => ({ kind: "note" as const, ...item, tags: noteTags.filter((tag) => tag.noteId === item.id).map((tag) => tag.tag) }))] };
-  } catch { return { results: [], error: "검색식 형식을 확인하세요. AND, OR, NOT, 괄호, 따옴표를 사용할 수 있습니다." }; }
+    return resultPage([...documents.map((item) => ({ kind: "document" as const, ...item, headings: JSON.parse(item.headings) as string[] })), ...notes.map((item) => ({ kind: "note" as const, ...item, tags: noteTags.filter((tag) => tag.noteId === item.id).map((tag) => tag.tag) }))]);
+  } catch { return { ...resultPage([]), error: "검색식 형식을 확인하세요. AND, OR, NOT, 괄호, 따옴표를 사용할 수 있습니다." }; }
 }
 
 function createWindow() {
@@ -347,7 +426,7 @@ function createWindow() {
   win.loadFile(join(__dirname, "..", "src", "renderer", "index.html"));
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // The app shell is local-only; guest webviews may browse only normal web URLs
   // and must never create an untracked native window.
   app.on("web-contents-created", (_event, contents) => {
@@ -362,6 +441,8 @@ app.whenReady().then(() => {
   });
   configureGuestSession();
   initializeSearchIndex();
+  try { await startBundledPublicSearch(); }
+  catch (error) { console.error("Atlas public-search could not start", error); publicSearchProcess?.kill(); }
   ipcMain.handle("state:load", () => loadState());
   ipcMain.handle("session:load", () => loadSession());
   ipcMain.handle("session:save", (_event, session: TabSession) => saveSession(session));
@@ -371,6 +452,26 @@ app.whenReady().then(() => {
     if (index >= 0) state.bookmarks.splice(index, 1); else state.bookmarks.unshift(bookmark);
     saveState(state); return state.bookmarks;
   });
+  ipcMain.handle("reading-list:toggle", (_event, item: ReadingItem) => {
+    const state = loadState();
+    const readingList = state.readingList || [];
+    const index = readingList.findIndex((entry) => entry.url === item.url);
+    if (index >= 0) readingList.splice(index, 1); else readingList.unshift(item);
+    state.readingList = readingList.slice(0, 200);
+    saveState(state); return state.readingList;
+  });
+  ipcMain.handle("saved-search:toggle", (_event, item: SavedSearch) => {
+    const state = loadState(); const savedSearches = state.savedSearches || [];
+    const index = savedSearches.findIndex((entry) => entry.query === item.query);
+    if (index >= 0) savedSearches.splice(index, 1); else savedSearches.unshift(item);
+    state.savedSearches = savedSearches.slice(0, 100); saveState(state); return state.savedSearches;
+  });
+  ipcMain.handle("search-history:add", (_event, item: SearchHistoryItem) => {
+    const query = item.query.trim().slice(0, 300); if (!query) return loadState().searchHistory || [];
+    const state = loadState(); state.searchHistory = [{ query, searchedAt: item.searchedAt }, ...(state.searchHistory || []).filter((entry) => entry.query !== query)].slice(0, 100);
+    saveState(state); return state.searchHistory;
+  });
+  ipcMain.handle("search-history:clear", () => { const state = loadState(); state.searchHistory = []; saveState(state); return state.searchHistory; });
   ipcMain.handle("history:add", (_event, item: HistoryItem) => {
     const state = loadState();
     state.history = [item, ...state.history.filter((entry) => entry.url !== item.url)].slice(0, 250);
@@ -381,7 +482,18 @@ app.whenReady().then(() => {
   });
   ipcMain.handle("document:count", () => documentCount());
   ipcMain.handle("document:graph", () => getGraphData());
-  ipcMain.handle("document:search", (_event, query: string) => searchDocuments(query));
+  ipcMain.handle("document:search", (_event, query: string, page?: number) => searchDocuments(query, page));
+  ipcMain.handle("public-search:config", () => publicSearchConfig);
+  ipcMain.handle("supabase:config", () => supabaseConfig());
+  ipcMain.handle("supabase:merge-state", (_event, remote: Pick<SavedState, "bookmarks" | "readingList" | "savedSearches">) => {
+    const state = loadState();
+    const mergeBy = <T>(local: T[], incoming: T[], key: (item: T) => string) => [...incoming, ...local].filter((item, index, items) => items.findIndex((candidate) => key(candidate) === key(item)) === index);
+    state.bookmarks = mergeBy(state.bookmarks, remote.bookmarks || [], (item) => item.url).slice(0, 250);
+    state.readingList = mergeBy(state.readingList || [], remote.readingList || [], (item) => item.url).slice(0, 200);
+    state.savedSearches = mergeBy(state.savedSearches || [], remote.savedSearches || [], (item) => item.query).slice(0, 100);
+    saveState(state);
+    return { bookmarks: state.bookmarks, readingList: state.readingList, savedSearches: state.savedSearches };
+  });
   ipcMain.handle("crawler:start", (event, request: CrawlRequest) => {
     const jobId = request.jobId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     crawlJobs.set(jobId, { cancelled: false, controller: new AbortController() });
@@ -418,3 +530,4 @@ app.whenReady().then(() => {
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+app.on("before-quit", () => publicSearchProcess?.kill());

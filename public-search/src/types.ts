@@ -1,5 +1,6 @@
 export type CrawlStatus = "queued" | "running" | "paused" | "complete" | "cancelled" | "failed";
 export type FrontierState = "queued" | "processing" | "fetched" | "failed";
+export type CrawlFailureType = "dns" | "connection" | "timeout" | "http_429" | "http_5xx" | "unknown";
 
 export type FrontierEntry = {
   url: string;
@@ -9,6 +10,11 @@ export type FrontierEntry = {
   availableAt: number;
   discoveredAt: string;
   lastError?: string | null;
+  failureType?: CrawlFailureType | null;
+  lastFailedAt?: string | null;
+  leaseOwner?: string | null;
+  leaseExpiresAt?: number | null;
+  heartbeatAt?: string | null;
   depth: number;
 };
 
@@ -58,3 +64,5 @@ export type SearchSuggestion = { value: string; label: string; kind: "title" | "
 export type AuditEntry = { id: number; action: string; target: string; details: string; createdAt: string };
 export type DocumentQuality = { titleLength: number; textLength: number; wordCount: number; textHash: string; hasValidators: boolean };
 export type DocumentInspection = { url: string; canonicalUrl?: string | null; title: string; indexedAt: string; etag?: string | null; lastModified?: string | null; quality: DocumentQuality; crawlJobs: Array<{ id: string; status: CrawlStatus; state: FrontierState; depth: number; updatedAt: string }> };
+export type BackupSnapshot = { file: string; bytes: number; modifiedAt: string };
+export type BackupVerification = { file: string; bytes: number; modifiedAt: string; verifiedAt: string; integrity: "ok"; schemaVersion: number; compatible: boolean; documents: number; jobs: number; frontier: number; domainBlocks: number };

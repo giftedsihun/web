@@ -1,8 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { publicApiError } from "./api-error";
 import { isAuthorized } from "./auth";
-import { loadOperationsConfig, requireAdminToken } from "./config";
+import { loadCrawlerUserAgent, loadOperationsConfig, requireAdminToken } from "./config";
 import { allowedCorsOrigins, corsResponseHeaders } from "./cors";
 import { Crawler } from "./crawler";
 import { normalizeCrawlPolicy } from "./crawl-policy";
@@ -12,7 +12,7 @@ import { FixedWindowRateLimiter } from "./rate-limit";
 import { readJsonBody, requireJsonContentType } from "./request";
 import { apiResponseHeaders } from "./response-headers";
 import { normalizeSearchQuery } from "./search-query";
-import { ensureSearchDateRange, normalizeSearchDate, normalizeSearchDomain, normalizeSearchSort } from "./search-options";
+import { ensureSearchDateRange, normalizeSearchDate, normalizeSearchDocumentType, normalizeSearchDomain, normalizeSearchLanguage, normalizeSearchSort } from "./search-options";
 import { MaintenanceInputError, normalizeRetentionInput } from "./maintenance";
 import { normalizeMaxConcurrentCrawls } from "./scheduler";
 import { normalizeCrawlLimits } from "./crawl-input";
@@ -21,14 +21,17 @@ import { OperationsReporter } from "./operations";
 
 const port = Number(process.env.PUBLIC_SEARCH_PORT || 8787);
 const dataPath = process.env.PUBLIC_SEARCH_DB || join(process.cwd(), "data", "public-search.sqlite");
+const backupDirectory = process.env.PUBLIC_SEARCH_BACKUP_DIR || join(dirname(dataPath), "backups");
 const adminToken = requireAdminToken(process.env);
-const operations = new OperationsReporter(loadOperationsConfig(process.env));
+const operationsConfig = loadOperationsConfig(process.env);
+const operations = new OperationsReporter(operationsConfig);
 const corsOrigins = allowedCorsOrigins(process.env);
 const store = new SearchStore(dataPath);
-const crawler = new Crawler(store, normalizeMaxConcurrentCrawls(process.env.PUBLIC_SEARCH_MAX_CONCURRENT_CRAWLS), (event, job) => operations.emit(event, job));
+const crawler = new Crawler(store, normalizeMaxConcurrentCrawls(process.env.PUBLIC_SEARCH_MAX_CONCURRENT_CRAWLS), (event, job) => operations.emit(event, job), loadCrawlerUserAgent(process.env));
 const apiRateLimiter = new FixedWindowRateLimiter(120, 60_000);
 crawler.resume();
 setInterval(() => crawler.runDueRecrawls(), 60_000).unref();
+if (operationsConfig.backup) setInterval(() => { try { store.createBackup(backupDirectory, operationsConfig.backup!.retention); } catch (error) { console.error("Atlas public-search scheduled backup failed", error); } }, operationsConfig.backup.intervalMs).unref();
 
 function json(request: IncomingMessage, response: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) { response.writeHead(status, apiResponseHeaders({ "content-type": "application/json; charset=utf-8", ...corsResponseHeaders(request.headers.origin, corsOrigins), ...headers })); response.end(JSON.stringify(body)); }
 function authorized(request: IncomingMessage) { return isAuthorized(request.headers.authorization, adminToken); }
@@ -53,10 +56,12 @@ const server = createServer(async (request, response) => {
       const domain = normalizeSearchDomain(url.searchParams.get("domain"));
       const from = normalizeSearchDate(url.searchParams.get("from"), "from");
       const to = normalizeSearchDate(url.searchParams.get("to"), "to");
+      const language = normalizeSearchLanguage(url.searchParams.get("language"));
+      const documentType = normalizeSearchDocumentType(url.searchParams.get("documentType"));
       ensureSearchDateRange(from, to);
-      const total = store.searchCount(query, domain, from, to);
-      const results = store.search(query, (page - 1) * pageSize, pageSize, sort, domain, from, to);
-      return json(request, response, 200, { query, sort, domain: domain ?? null, from: from ?? null, to: to ?? null, page, pageSize, total, totalPages: Math.max(Math.ceil(total / pageSize), 1), results, facets: store.searchFacets(query, domain, from, to), source: "atlas-public-starter" });
+      const total = store.searchCount(query, domain, from, to, language, documentType);
+      const results = store.search(query, (page - 1) * pageSize, pageSize, sort, domain, from, to, language, documentType);
+      return json(request, response, 200, { query, sort, domain: domain ?? null, from: from ?? null, to: to ?? null, language: language ?? null, documentType: documentType ?? null, page, pageSize, total, totalPages: Math.max(Math.ceil(total / pageSize), 1), results, facets: store.searchFacets(query, domain, from, to, language, documentType), source: "atlas-public-starter" });
     }
     if (request.method === "GET" && url.pathname === "/v1/search/suggestions") {
       // Suggestions are derived from indexed public documents; request text is never persisted.
@@ -89,6 +94,25 @@ const server = createServer(async (request, response) => {
       if (!authorized(request)) return json(request, response, 401, { error: "admin token required" });
       return json(request, response, 200, store.stats(dataPath));
     }
+    if (request.method === "GET" && url.pathname === "/v1/admin/metrics") {
+      if (!authorized(request)) return json(request, response, 401, { error: "admin token required" });
+      return json(request, response, 200, store.operationalMetrics(dataPath));
+    }
+    if (request.method === "POST" && url.pathname === "/v1/admin/backup") {
+      if (!authorized(request)) return json(request, response, 401, { error: "admin token required" });
+      return json(request, response, 201, store.createBackup(backupDirectory, operationsConfig.backup?.retention));
+    }
+    if (request.method === "GET" && url.pathname === "/v1/admin/backups") {
+      if (!authorized(request)) return json(request, response, 401, { error: "admin token required" });
+      return json(request, response, 200, { backups: store.listBackups(backupDirectory) });
+    }
+    if (request.method === "POST" && url.pathname === "/v1/admin/backups/verify") {
+      if (!authorized(request)) return json(request, response, 401, { error: "admin token required" });
+      requireJsonContentType(request.headers["content-type"]);
+      const input = await readJsonBody(request, request.headers["content-length"]) as { file?: unknown };
+      if (typeof input.file !== "string") throw new MaintenanceInputError("file is required.");
+      return json(request, response, 200, store.verifyBackup(backupDirectory, input.file));
+    }
     if (request.method === "POST" && url.pathname === "/v1/admin/retention") {
       if (!authorized(request)) return json(request, response, 401, { error: "admin token required" });
       requireJsonContentType(request.headers["content-type"]);
@@ -116,6 +140,26 @@ const server = createServer(async (request, response) => {
       if (typeof input.domain !== "string") throw new MaintenanceInputError("domain is required."); if (input.dryRun !== undefined && typeof input.dryRun !== "boolean") throw new MaintenanceInputError("dryRun must be a boolean."); const domain = normalizeSearchDomain(input.domain); if (!domain) throw new MaintenanceInputError("domain is required.");
       return json(request, response, 200, store.deleteDocumentsByDomain(domain, input.dryRun !== false));
     }
+    if (request.method === "GET" && url.pathname === "/v1/admin/domain-blocks") {
+      if (!authorized(request)) return json(request, response, 401, { error: "admin token required" });
+      return json(request, response, 200, { blocks: store.listDomainBlocks() });
+    }
+    if (request.method === "POST" && url.pathname === "/v1/admin/domain-blocks") {
+      if (!authorized(request)) return json(request, response, 401, { error: "admin token required" });
+      requireJsonContentType(request.headers["content-type"]);
+      const input = await readJsonBody(request, request.headers["content-length"]) as { domain?: unknown; reason?: unknown };
+      if (typeof input.domain !== "string") throw new MaintenanceInputError("domain is required.");
+      if (input.reason !== undefined && typeof input.reason !== "string") throw new MaintenanceInputError("reason must be a string.");
+      const domain = normalizeSearchDomain(input.domain);
+      if (!domain) throw new MaintenanceInputError("domain is required.");
+      return json(request, response, 200, store.blockDomain(domain, input.reason || "Removal request"));
+    }
+    if (request.method === "DELETE" && url.pathname === "/v1/admin/domain-blocks") {
+      if (!authorized(request)) return json(request, response, 401, { error: "admin token required" });
+      const domain = normalizeSearchDomain(url.searchParams.get("domain"));
+      if (!domain) throw new MaintenanceInputError("domain is required.");
+      return store.unblockDomain(domain) ? json(request, response, 200, { domain, blocked: false }) : json(request, response, 404, { error: "domain block not found" });
+    }
     if (request.method === "GET" && url.pathname === "/v1/admin/audit") {
       if (!authorized(request)) return json(request, response, 401, { error: "admin token required" }); return json(request, response, 200, { entries: store.listAudit() });
     }
@@ -129,6 +173,15 @@ const server = createServer(async (request, response) => {
       const state = normalizeFrontierState(url.searchParams.get("state"));
       const total = store.frontierCountByState(frontierJobId, state);
       return json(request, response, 200, { entries: store.listFrontier(frontierJobId, (page - 1) * pageSize, pageSize, state), page, pageSize, total, totalPages: Math.max(Math.ceil(total / pageSize), 1), state: state ?? null });
+    }
+    const diagnosticMatch = url.pathname.match(/^\/v1\/crawls\/([\w-]+)\/pages\/diagnostic$/);
+    if (request.method === "GET" && diagnosticMatch) {
+      if (!authorized(request)) return json(request, response, 401, { error: "admin token required" });
+      const pageUrl = url.searchParams.get("url");
+      if (!pageUrl) throw new MaintenanceInputError("url is required.");
+      if (!store.getJob(diagnosticMatch[1])) return json(request, response, 404, { error: "crawl job not found" });
+      const diagnostic = store.pageDiagnostic(diagnosticMatch[1], pageUrl);
+      return diagnostic ? json(request, response, 200, diagnostic) : json(request, response, 404, { error: "crawl page diagnostic not found" });
     }
     const retryFailedId = url.pathname.match(/^\/v1\/crawls\/([\w-]+)\/frontier\/retry$/)?.[1];
     if (request.method === "POST" && retryFailedId) {

@@ -27,6 +27,36 @@ test("FTS reindex replaces prior document text and supports Boolean search", () 
   assert.equal(database.prepare("SELECT count(*) AS count FROM documents WHERE documents MATCH 'atlas'").get().count, 0);
 });
 
+test("local search returns stable result pages with totals", () => {
+  const results = Array.from({ length: 25 }, (_, index) => ({ kind: "document", title: `Atlas ${index}`, url: `https://example.test/${index}`, headings: [], preview: "atlas", indexedAt: "2026-01-01T00:00:00.000Z" }));
+  const page = (items, number, size = 20) => ({ results: items.slice((number - 1) * size, number * size), total: items.length, page: number, pageSize: size, totalPages: Math.max(Math.ceil(items.length / size), 1) });
+  const second = page(results, 2);
+  assert.equal(second.total, 25);
+  assert.equal(second.totalPages, 2);
+  assert.equal(second.results.length, 5);
+  assert.equal(second.results[0].url, "https://example.test/20");
+});
+
+test("reading list toggles a URL and keeps the newest saved entry first", () => {
+  const list = [];
+  const toggle = (item) => { const index = list.findIndex((entry) => entry.url === item.url); if (index >= 0) list.splice(index, 1); else list.unshift(item); return list; };
+  toggle({ title: "First", url: "https://atlas.test/first", savedAt: "2026-07-01T00:00:00.000Z" });
+  toggle({ title: "Second", url: "https://atlas.test/second", savedAt: "2026-07-02T00:00:00.000Z" });
+  assert.deepEqual(list.map((item) => item.url), ["https://atlas.test/second", "https://atlas.test/first"]);
+  toggle({ title: "First", url: "https://atlas.test/first", savedAt: "2026-07-01T00:00:00.000Z" });
+  assert.deepEqual(list.map((item) => item.url), ["https://atlas.test/second"]);
+});
+
+test("saved searches and query history are unique and bounded locally", () => {
+  const saved = []; const history = [];
+  const toggle = (query) => { const index = saved.findIndex((item) => item.query === query); if (index >= 0) saved.splice(index, 1); else saved.unshift({ query }); };
+  const record = (query) => { history.unshift({ query }); const duplicate = history.findIndex((item, index) => index > 0 && item.query === query); if (duplicate >= 0) history.splice(duplicate, 1); history.splice(3); };
+  toggle("atlas"); toggle("Korean search"); toggle("atlas");
+  assert.deepEqual(saved.map((item) => item.query), ["Korean search"]);
+  ["atlas", "notes", "atlas", "crawler"].forEach(record);
+  assert.deepEqual(history.map((item) => item.query), ["crawler", "atlas", "notes"]);
+});
+
 test("domain and date filters narrow indexed search results", () => {
   assert.equal(matchesSearchFilters({ url: "https://docs.example.com/a", indexedAt: "2026-07-10T00:00:00.000Z" }, "example.com", "2026-07-01", "2026-07-31"), true);
   assert.equal(matchesSearchFilters({ url: "https://other.test/a", indexedAt: "2026-07-10T00:00:00.000Z" }, "example.com"), false);

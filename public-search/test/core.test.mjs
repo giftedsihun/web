@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canonicalize, extractDocument, isPublicIpAddress, isPublicWebUrl, koreanNgrams, sitemapEntries, sitemapUrls } from "../../dist/public-search/extract.js";
+import { canonicalize, extractDocument, inferDocumentLanguage, isPublicIpAddress, isPublicWebUrl, koreanNgrams, robotsDirectives, searchFallbackQuery, searchTokens, sitemapEntries, sitemapUrls } from "../../dist/public-search/extract.js";
 import { normalizeMaxConcurrentCrawls, SchedulerConfigError } from "../../dist/public-search/scheduler.js";
-import { combineCrawlSignals, crawlFailureMessage, isAllowedCrawlUrl, MAX_HOST_THROTTLES, MAX_RETRY_AFTER_MS, MAX_ROBOTS_CACHE_ENTRIES, normalizeApprovedHost, pruneHostThrottles, pruneRobotsCache, retryAfterMs, scopedCanonicalUrl, waitForCrawl } from "../../dist/public-search/crawler.js";
-import { loadOperationsConfig, requireAdminToken } from "../../dist/public-search/config.js";
+import { classifyCrawlFailure, combineCrawlSignals, crawlFailureMessage, frontierRetryDelayMs, isAllowedCrawlUrl, MAX_FRONTIER_RETRY_DELAY_MS, MAX_HOST_THROTTLES, MAX_RETRY_AFTER_MS, MAX_ROBOTS_CACHE_ENTRIES, normalizeApprovedHost, pruneHostThrottles, pruneRobotsCache, resolvePublicAddresses, retryAfterMs, scopedCanonicalUrl, waitForCrawl } from "../../dist/public-search/crawler.js";
+import { loadBackupConfig, loadCrawlerUserAgent, loadOperationsConfig, requireAdminToken } from "../../dist/public-search/config.js";
 import { MAX_WEBHOOK_PAYLOAD_BYTES, OperationsReporter, operationPayload } from "../../dist/public-search/operations.js";
 import { isAuthorized } from "../../dist/public-search/auth.js";
 import { MAX_REQUEST_BODY_BYTES, readJsonBody, RequestBodyTooLargeError, requireJsonContentType, UnsupportedMediaTypeError } from "../../dist/public-search/request.js";
@@ -12,15 +12,15 @@ import { FixedWindowRateLimiter } from "../../dist/public-search/rate-limit.js";
 import { applyHttpLimits, HTTP_HEADERS_TIMEOUT_MS, HTTP_KEEP_ALIVE_TIMEOUT_MS, HTTP_MAX_HEADERS, HTTP_REQUEST_TIMEOUT_MS } from "../../dist/public-search/http-limits.js";
 import { MAX_SEARCH_QUERY_DEPTH, MAX_SEARCH_QUERY_LENGTH, MAX_SEARCH_QUERY_TERMS, normalizeSearchQuery, SearchQueryError } from "../../dist/public-search/search-query.js";
 import { CrawlInputError, MAX_CRAWL_PAGES, MAX_RECRAWL_MINUTES, normalizeCrawlLimits } from "../../dist/public-search/crawl-input.js";
-import { allowsContentType, allowsCrawlUrl, CrawlPolicyError, normalizeCrawlPolicy } from "../../dist/public-search/crawl-policy.js";
+import { allowsContentType, allowsCrawlUrl, CrawlPolicyError, MAX_REQUEST_INTERVAL_MS, MIN_REQUEST_INTERVAL_MS, normalizeCrawlPolicy } from "../../dist/public-search/crawl-policy.js";
 import { CrawlStatusFilterError, normalizeCrawlStatus, normalizeFrontierState } from "../../dist/public-search/crawl-status.js";
 import { API_SECURITY_HEADERS, apiResponseHeaders } from "../../dist/public-search/response-headers.js";
 import { publicApiError } from "../../dist/public-search/api-error.js";
 import { allowedCorsOrigins, corsResponseHeaders } from "../../dist/public-search/cors.js";
-import { ensureSearchDateRange, normalizeSearchDate, normalizeSearchDomain, normalizeSearchSort, SearchOptionsError } from "../../dist/public-search/search-options.js";
+import { ensureSearchDateRange, normalizeSearchDate, normalizeSearchDocumentType, normalizeSearchDomain, normalizeSearchLanguage, normalizeSearchSort, SearchOptionsError } from "../../dist/public-search/search-options.js";
 import { MaintenanceInputError, normalizeRetentionInput } from "../../dist/public-search/maintenance.js";
 import { robotsPolicy, robotsSitemaps } from "../../dist/public-search/robots.js";
-import { SearchStore } from "../../dist/public-search/store.js";
+import { documentQualityScore, SearchStore } from "../../dist/public-search/store.js";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -33,6 +33,9 @@ test("canonical URLs discard fragments and credentials", () => {
 
 test("public Korean n-grams preserve syllable pairs for fallback search", () => {
   assert.equal(koreanNgrams("한국어 검색"), "한국 국어 검색");
+  assert.match(searchTokens("검색을 cafe\u0301 東京"), /검색/);
+  assert.match(searchTokens("검색을 cafe\u0301 東京"), /cafe/);
+  assert.equal(searchFallbackQuery("검색을"), "검 AND 검색 AND 색");
 });
 
 test("Korean fallback index can be rebuilt from the primary search index", () => {
@@ -43,6 +46,9 @@ test("Korean fallback index can be rebuilt from the primary search index", () =>
     store.index("https://example.test/korean", "https://example.test/korean", "한국어", "검색 품질", "hash");
     assert.deepEqual(store.rebuildNgrams(), { documents: 1 });
     assert.equal(store.searchCount("한국어"), 1);
+    assert.equal(store.searchCount("검색을"), 1);
+    store.index("https://example.test/cjk", "https://example.test/cjk", "東京", "東京 guide", "cjk-hash");
+    assert.equal(store.searchCount("東京"), 1);
   } finally { store?.close(); rmSync(path, { force: true }); }
 });
 
@@ -177,7 +183,8 @@ test("crawl limits reject non-numeric values and remain within service budgets",
 });
 
 test("crawl policies bound depth and filter URLs before they enter the frontier", () => {
-  const policy = normalizeCrawlPolicy({ maxDepth: 2, includePatterns: ["https://example.test/docs/*"], excludePatterns: ["*private*"] });
+  const policy = normalizeCrawlPolicy({ maxDepth: 2, requestIntervalMs: 5_000, includePatterns: ["https://example.test/docs/*"], excludePatterns: ["*private*"] });
+  assert.equal(policy.requestIntervalMs, 5_000);
   assert.equal(allowsCrawlUrl("https://example.test/docs/guide", 2, policy), true);
   assert.equal(allowsCrawlUrl("https://example.test/docs/private", 1, policy), false);
   assert.equal(allowsCrawlUrl("https://example.test/blog", 1, policy), false);
@@ -185,6 +192,8 @@ test("crawl policies bound depth and filter URLs before they enter the frontier"
   assert.equal(allowsContentType("text/html; charset=utf-8", policy), true);
   assert.equal(allowsContentType("application/pdf", policy), false);
   assert.throws(() => normalizeCrawlPolicy({ maxDepth: -1 }), CrawlPolicyError);
+  assert.throws(() => normalizeCrawlPolicy({ requestIntervalMs: MIN_REQUEST_INTERVAL_MS - 1 }), CrawlPolicyError);
+  assert.throws(() => normalizeCrawlPolicy({ requestIntervalMs: MAX_REQUEST_INTERVAL_MS + 1 }), CrawlPolicyError);
   assert.throws(() => normalizeCrawlPolicy({ includePatterns: [" "] }), CrawlPolicyError);
 });
 
@@ -193,6 +202,45 @@ test("public search options only allow safe domain filters and documented sorts"
   assert.equal(normalizeSearchDomain("Docs.Example.Test"), "docs.example.test");
   assert.throws(() => normalizeSearchSort("random"), SearchOptionsError);
   assert.throws(() => normalizeSearchDomain("example.test/path"), SearchOptionsError);
+  assert.equal(normalizeSearchLanguage("ko"), "ko");
+  assert.equal(normalizeSearchDocumentType("xhtml"), "xhtml");
+  assert.throws(() => normalizeSearchLanguage("fr"), SearchOptionsError);
+  assert.throws(() => normalizeSearchDocumentType("pdf"), SearchOptionsError);
+  assert.equal(inferDocumentLanguage("한국어 검색 문서입니다"), "ko");
+});
+
+test("crawler identity is configurable and robots directives honor HTTP headers", () => {
+  assert.equal(loadCrawlerUserAgent({}), "AtlasPublicSearchBot/0.1 (+https://atlas.local/bot)");
+  assert.equal(loadCrawlerUserAgent({ PUBLIC_SEARCH_CRAWLER_USER_AGENT: "AtlasBot/1.0 (+https://example.test/crawler)" }), "AtlasBot/1.0 (+https://example.test/crawler)");
+  assert.throws(() => loadCrawlerUserAgent({ PUBLIC_SEARCH_CRAWLER_USER_AGENT: "bad\nvalue" }));
+  assert.deepEqual(robotsDirectives("noindex, nofollow"), { noindex: true, nofollow: true });
+  assert.deepEqual(robotsDirectives("none"), { noindex: true, nofollow: true });
+});
+
+test("scheduled backups require bounded interval and retention configuration", () => {
+  assert.deepEqual(loadBackupConfig({}), undefined);
+  assert.deepEqual(loadBackupConfig({ PUBLIC_SEARCH_BACKUP_INTERVAL_MINUTES: "60", PUBLIC_SEARCH_BACKUP_RETENTION: "3" }), { intervalMs: 3_600_000, retention: 3 });
+  for (const value of ["14", "10081", "nope"]) assert.throws(() => loadBackupConfig({ PUBLIC_SEARCH_BACKUP_INTERVAL_MINUTES: value }));
+  assert.throws(() => loadBackupConfig({ PUBLIC_SEARCH_BACKUP_INTERVAL_MINUTES: "60", PUBLIC_SEARCH_BACKUP_RETENTION: "0" }));
+});
+
+test("public-search records and exposes its current schema baseline", () => {
+  const path = join(tmpdir(), `atlas-public-search-schema-${randomUUID()}.sqlite`); let store;
+  try {
+    store = new SearchStore(path);
+    assert.equal(store.schemaVersion(), 1);
+  } finally { store?.close(); rmSync(path, { force: true }); }
+});
+
+test("public search filters indexed language and document type", () => {
+  const path = join(tmpdir(), `atlas-public-search-metadata-${randomUUID()}.sqlite`); let store;
+  try {
+    store = new SearchStore(path);
+    store.index("https://example.test/korean", undefined, "한국어 atlas", "한국어 atlas 검색 문서입니다.", "metadata-ko", undefined, [], { language: "ko", documentType: "html" });
+    store.index("https://example.test/xhtml", undefined, "Atlas XML", "Atlas XML reference document.", "metadata-xhtml", undefined, [], { language: "en", documentType: "xhtml" });
+    assert.equal(store.searchCount("atlas", undefined, undefined, undefined, "ko"), 1);
+    assert.equal(store.searchCount("atlas", undefined, undefined, undefined, undefined, "xhtml"), 1);
+  } finally { store?.close(); rmSync(path, { force: true }); }
 });
 
 test("crawl status filters accept known lifecycle states only", () => {
@@ -234,6 +282,68 @@ test("extractor resolves, filters, and de-duplicates web links", () => {
   assert.deepEqual(document.links, ["https://example.test/one"]);
 });
 
+test("relevance ranking combines title, URL, body, and freshness signals", () => {
+  const path = join(tmpdir(), `atlas-public-search-ranking-${randomUUID()}.sqlite`); let store;
+  try {
+    store = new SearchStore(path);
+    store.index("https://example.test/article", "https://example.test/article", "Atlas article", "A general guide", "ranking-title");
+    store.index("https://example.test/atlas-reference", "https://example.test/atlas-reference", "Reference", "atlas appears in body", "ranking-url");
+    const toISOString = Date.prototype.toISOString;
+    Date.prototype.toISOString = () => "2000-01-01T00:00:00.000Z";
+    try { store.index("https://example.test/archive", "https://example.test/archive", "Archive", "atlas appears in body", "ranking-old"); } finally { Date.prototype.toISOString = toISOString; }
+    const results = store.search("atlas", 0, 20);
+    assert.equal(results[0].url, "https://example.test/atlas-reference");
+    assert.ok(results.findIndex((result) => result.url === "https://example.test/article") < results.findIndex((result) => result.url === "https://example.test/archive"));
+    assert.ok(results.every((result) => result.score > 0));
+  } finally { store?.close(); rmSync(path, { force: true }); }
+});
+
+test("relevance ranking adds bounded indexed-link authority and content-quality signals", () => {
+  const path = join(tmpdir(), `atlas-public-search-link-ranking-${randomUUID()}.sqlite`); let store;
+  try {
+    store = new SearchStore(path);
+    const usefulText = "atlas ranking guide ".repeat(8);
+    store.index("https://example.test/reference", undefined, "Reference", usefulText, "reference");
+    store.index("https://example.test/source-one", undefined, "Source one", usefulText, "source-one", undefined, ["https://example.test/reference"]);
+    store.index("https://example.test/source-two", undefined, "Source two", usefulText, "source-two", undefined, ["https://example.test/reference"]);
+    store.index("https://example.test/thin", undefined, "Thin", "atlas", "thin");
+    const results = store.search("atlas", 0, 20);
+    assert.equal(results[0].url, "https://example.test/reference");
+    assert.ok(results.find((result) => result.url === "https://example.test/reference").score > results.find((result) => result.url === "https://example.test/thin").score);
+  } finally { store?.close(); rmSync(path, { force: true }); }
+});
+
+test("offline relevance corpus preserves ranking expectations across language and quality cases", () => {
+  const path = join(tmpdir(), `atlas-public-search-evaluation-${randomUUID()}.sqlite`); let store;
+  try {
+    store = new SearchStore(path);
+    const substantive = "검색 품질과 Atlas 문서 탐색을 설명하는 충분한 본문입니다. ".repeat(12);
+    store.index("https://example.test/search-guide", undefined, "Atlas search guide", substantive, "evaluation-guide");
+    store.index("https://example.test/search-reference", undefined, "Reference", substantive, "evaluation-reference", undefined, ["https://example.test/search-guide"]);
+    store.index("https://example.test/noise", undefined, "atlas atlas atlas atlas", "atlas ".repeat(30), "evaluation-noise", undefined, Array.from({ length: 60 }, (_, index) => `https://example.test/out-${index}`));
+    store.index("https://example.test/korean", undefined, "한국어 검색 안내", substantive, "evaluation-korean");
+    store.index("https://example.test/tokyo", undefined, "Tokyo travel", "東京 여행과 교통 안내입니다. ".repeat(12), "evaluation-tokyo");
+    const expectations = [
+      ["atlas", "https://example.test/search-guide"],
+      ["검색을", "https://example.test/korean"],
+      ["東京", "https://example.test/tokyo"],
+    ];
+    for (const [query, expected] of expectations) assert.equal(store.search(query, 0, 10)[0].url, expected);
+    const atlasResults = store.search("atlas", 0, 10);
+    assert.ok(atlasResults.find((result) => result.url === "https://example.test/search-guide").score > atlasResults.find((result) => result.url === "https://example.test/noise").score);
+    assert.ok(documentQualityScore("atlas atlas atlas atlas", "atlas ".repeat(30), 60) < 0);
+  } finally { store?.close(); rmSync(path, { force: true }); }
+});
+
+test("extractor recognizes page-level noindex and nofollow directives", () => {
+  const noindex = extractDocument('<meta name="robots" content="noindex, follow"><title>Hidden</title>', "https://example.test/hidden");
+  const nofollow = extractDocument('<meta content="NOFOLLOW" name="robots"><a href="/next">Next</a>', "https://example.test/start");
+  assert.equal(noindex.noindex, true);
+  assert.equal(noindex.nofollow, false);
+  assert.equal(nofollow.noindex, false);
+  assert.equal(nofollow.nofollow, true);
+});
+
 test("sitemap discovery keeps valid public URLs and excludes private targets", () => {
   const urls = sitemapUrls("<urlset><url><loc>/guide</loc></url><url><loc>http://127.0.0.1/private</loc></url><url><loc>https://example.test/guide</loc></url></urlset>", "https://example.test");
   assert.deepEqual(urls, ["https://example.test/guide"]);
@@ -268,6 +378,30 @@ test("crawler diagnostics are normalized and bounded", () => {
   assert.equal(crawlFailureMessage(new Error(" request\nfailed ")), "request failed");
   assert.equal(crawlFailureMessage("unexpected"), "Crawler request failed");
   assert.equal(crawlFailureMessage(new Error("x".repeat(600))).length, 500);
+});
+
+test("crawler rejects every private DNS answer before and during connection lookup", async () => {
+  const publicResolver = async () => [{ address: "8.8.8.8", family: 4 }];
+  assert.deepEqual(await resolvePublicAddresses("public.example.test", publicResolver), [{ address: "8.8.8.8", family: 4 }]);
+  for (const addresses of [
+    [{ address: "169.254.169.254", family: 4 }],
+    [{ address: "8.8.8.8", family: 4 }, { address: "10.0.0.7", family: 4 }],
+    [{ address: "::1", family: 6 }],
+    [],
+  ]) await assert.rejects(resolvePublicAddresses("rebound.example.test", async () => addresses), /Blocked private network address/);
+});
+
+test("crawler classifies retryable transport and overloaded-host failures", () => {
+  const dns = Object.assign(new Error("lookup failed"), { code: "ENOTFOUND" });
+  const connection = Object.assign(new Error("connect failed"), { code: "ECONNRESET" });
+  assert.deepEqual(classifyCrawlFailure(dns), { type: "dns", retryable: true });
+  assert.deepEqual(classifyCrawlFailure(connection), { type: "connection", retryable: true });
+  assert.deepEqual(classifyCrawlFailure(new Error("HTTP 429")), { type: "http_429", retryable: true });
+  assert.deepEqual(classifyCrawlFailure(new Error("HTTP 503")), { type: "http_5xx", retryable: true });
+  assert.deepEqual(classifyCrawlFailure(new Error("invalid HTML")), { type: "unknown", retryable: false });
+  assert.equal(frontierRetryDelayMs(1), 1_000);
+  assert.equal(frontierRetryDelayMs(2, 5_000), 5_000);
+  assert.equal(frontierRetryDelayMs(99), MAX_FRONTIER_RETRY_DELAY_MS);
 });
 
 test("crawler cancellation signal aborts requests before their timeout", () => {
@@ -436,17 +570,17 @@ test("crawl and frontier listings use stable tie-breakers for pagination", () =>
   let store;
   try {
     store = new SearchStore(path);
-    const now = new Date().toISOString();
-    for (const id of ["job-a", "job-b"]) store.createJob({ id, seedUrl: `https://${id}.test`, maxPages: 3, allowedHosts: [`${id}.test`], status: "queued", indexed: 0, skipped: 0, failed: 0, createdAt: now, updatedAt: now });
-    assert.deepEqual(store.listJobs().map((job) => job.id), ["job-b", "job-a"]);
     const toISOString = Date.prototype.toISOString;
+    const now = new Date().toISOString();
     Date.prototype.toISOString = () => now;
     try {
+      for (const id of ["job-a", "job-b"]) store.createJob({ id, seedUrl: `https://${id}.test`, maxPages: 3, allowedHosts: [`${id}.test`], status: "queued", indexed: 0, skipped: 0, failed: 0, createdAt: now, updatedAt: now });
+      assert.deepEqual(store.listJobs().map((job) => job.id), ["job-b", "job-a"]);
       store.enqueue("job-a", "https://job-a.test/z");
       store.enqueue("job-a", "https://job-a.test/a");
     } finally { Date.prototype.toISOString = toISOString; }
-    assert.deepEqual(store.listFrontier("job-a").map((entry) => entry.url), ["https://job-a.test/a", "https://job-a.test/z", "https://job-a.test"]);
-    assert.equal(store.nextUrl("job-a")?.url, "https://job-a.test/a");
+    assert.deepEqual(store.listFrontier("job-a").map((entry) => entry.url), ["https://job-a.test", "https://job-a.test/a", "https://job-a.test/z"]);
+    assert.equal(store.nextUrl("job-a")?.url, "https://job-a.test");
   } finally { store?.close(); rmSync(path, { force: true }); }
 });
 
@@ -463,7 +597,7 @@ test("frontier progress summary reports queued, in-flight, and completed URLs", 
     store.markProcessing("progress-job", "https://example.test/complete");
     store.markFetched("progress-job", "https://example.test/complete");
     store.markProcessing("progress-job", "https://example.test/in-flight");
-    assert.deepEqual(store.frontierStatusSummary("progress-job"), { total: 3, states: { queued: 1, processing: 1, fetched: 1, failed: 0 }, attempted: 2, attempts: 3, retries: 1 });
+    assert.deepEqual(store.frontierStatusSummary("progress-job"), { total: 3, states: { queued: 1, processing: 1, fetched: 1, failed: 0 }, attempted: 2, attempts: 3, retries: 1, retrying: 0, nextRetryAt: null, leased: 0, nextLeaseExpiryAt: null });
   } finally { store?.close(); rmSync(path, { force: true }); }
 });
 
@@ -516,6 +650,81 @@ test("frontier failures retain bounded per-entry diagnostics", () => {
     const entry = store.listFrontier("diagnostic-job", 0, 20, "failed")[0];
     assert.equal(entry.lastError?.length, 500);
     assert.equal(entry.lastError?.includes("\n"), false);
+  } finally { store?.close(); rmSync(path, { force: true }); }
+});
+
+test("canonical and content-hash clusters retain one searchable representative with diagnostics", () => {
+  const path = join(tmpdir(), `atlas-public-search-${randomUUID()}.sqlite`);
+  let store;
+  try {
+    store = new SearchStore(path);
+    const now = new Date().toISOString();
+    store.createJob({ id: "cluster-job", seedUrl: "https://example.test", maxPages: 3, allowedHosts: ["example.test"], status: "complete", indexed: 1, skipped: 1, failed: 0, createdAt: now, updatedAt: now });
+    assert.deepEqual(store.index("https://example.test/guide", "https://example.test/guide", "Guide", "shared public content", "shared-hash"), { indexed: true });
+    assert.deepEqual(store.index("https://example.test/print/guide", "https://example.test/print/guide", "Print guide", "shared public content", "shared-hash"), { indexed: false, duplicateOf: "https://example.test/guide" });
+    assert.deepEqual(store.index("https://example.test/previously-indexed", "https://example.test/previously-indexed", "Previous", "older content", "old-hash"), { indexed: true });
+    assert.deepEqual(store.index("https://example.test/previously-indexed", "https://example.test/previously-indexed", "Duplicate", "shared public content", "shared-hash"), { indexed: false, duplicateOf: "https://example.test/guide" });
+    store.recordPageDiagnostic("cluster-job", { url: "https://example.test/print/guide", host: "example.test", noindex: false, nofollow: false, canonicalUrl: "https://example.test/print/guide", canonicalOutcome: "accepted", duplicateOf: "https://example.test/guide", indexed: false });
+    assert.equal(store.documentCount(), 1);
+    assert.equal(store.searchCount("shared"), 1);
+    assert.equal(store.searchCount("older"), 0);
+    const diagnostic = store.pageDiagnostic("cluster-job", "https://example.test/print/guide");
+    assert.deepEqual({ ...diagnostic }, {
+      url: "https://example.test/print/guide", host: "example.test", noindex: 0, nofollow: 0, canonicalUrl: "https://example.test/print/guide", canonicalOutcome: "accepted", duplicateOf: "https://example.test/guide", indexed: 0, updatedAt: diagnostic.updatedAt,
+    });
+  } finally { store?.close(); rmSync(path, { force: true }); }
+});
+
+test("frontier lease claims are exclusive, renewable, and recover after expiry", () => {
+  const path = join(tmpdir(), `atlas-public-search-${randomUUID()}.sqlite`);
+  let store;
+  try {
+    store = new SearchStore(path);
+    const now = new Date().toISOString();
+    store.createJob({ id: "lease-job", seedUrl: "https://example.test", maxPages: 2, allowedHosts: ["example.test"], status: "running", indexed: 0, skipped: 0, failed: 0, createdAt: now, updatedAt: now });
+    const claimed = store.claimNextUrl("lease-job", "worker-a", 1_000, 10_000);
+    assert.deepEqual({ url: claimed?.url, depth: claimed?.depth }, { url: "https://example.test", depth: 0 });
+    assert.equal(store.claimNextUrl("lease-job", "worker-b", 1_000, 10_001), undefined);
+    const entry = store.listFrontier("lease-job")[0];
+    assert.equal(entry.leaseOwner, "worker-a");
+    assert.equal(entry.leaseExpiresAt, 11_000);
+    assert.ok(entry.heartbeatAt);
+    assert.equal(store.heartbeatLease("lease-job", "https://example.test", "worker-a", 1_000, 10_500), true);
+    assert.equal(store.heartbeatLease("lease-job", "https://example.test", "worker-b", 1_000, 10_600), false);
+    assert.equal(store.claimNextUrl("lease-job", "worker-b", 1_000, 11_499), undefined);
+    const recovered = store.claimNextUrl("lease-job", "worker-b", 1_000, 11_500);
+    assert.deepEqual({ url: recovered?.url, depth: recovered?.depth }, { url: "https://example.test", depth: 0 });
+    const reclaimed = store.listFrontier("lease-job")[0];
+    assert.equal(reclaimed.leaseOwner, "worker-b");
+    assert.equal(reclaimed.attempts, 2);
+    assert.deepEqual({ leased: store.frontierStatusSummary("lease-job").leased, nextLeaseExpiryAt: store.frontierStatusSummary("lease-job").nextLeaseExpiryAt }, { leased: 1, nextLeaseExpiryAt: 12_500 });
+  } finally { store?.close(); rmSync(path, { force: true }); }
+});
+
+test("retryable frontier failures persist classification and exponential availability", () => {
+  const path = join(tmpdir(), `atlas-public-search-${randomUUID()}.sqlite`);
+  let store;
+  try {
+    store = new SearchStore(path);
+    const now = new Date().toISOString();
+    store.createJob({ id: "backoff-job", seedUrl: "https://example.test", maxPages: 2, allowedHosts: ["example.test"], status: "queued", indexed: 0, skipped: 0, failed: 0, createdAt: now, updatedAt: now });
+    store.markProcessing("backoff-job", "https://example.test");
+    const scheduled = store.scheduleRetry("backoff-job", "https://example.test", "HTTP 503", "http_5xx", 1_000, 3);
+    assert.equal(scheduled.terminal, false);
+    assert.equal(scheduled.attempts, 1);
+    assert.ok(scheduled.availableAt >= Date.now() + 900);
+    const retrying = store.listFrontier("backoff-job")[0];
+    assert.equal(retrying.state, "queued");
+    assert.equal(retrying.failureType, "http_5xx");
+    assert.equal(retrying.lastError, "HTTP 503");
+    assert.ok(retrying.lastFailedAt);
+    assert.equal(store.nextUrl("backoff-job"), undefined);
+    assert.deepEqual(store.frontierStatusSummary("backoff-job").states, { queued: 1, processing: 0, fetched: 0, failed: 0 });
+    assert.equal(store.frontierStatusSummary("backoff-job").retrying, 1);
+    store.markProcessing("backoff-job", "https://example.test");
+    store.markProcessing("backoff-job", "https://example.test");
+    assert.deepEqual(store.scheduleRetry("backoff-job", "https://example.test", "HTTP 503", "http_5xx", 1_000, 3), { terminal: true, attempts: 3 });
+    assert.equal(store.listFrontier("backoff-job", 0, 20, "failed")[0].failureType, "http_5xx");
   } finally { store?.close(); rmSync(path, { force: true }); }
 });
 

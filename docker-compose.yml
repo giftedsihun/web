@@ -11,6 +11,12 @@ services:
       # Optional comma-separated browser origins. Cross-origin browser requests are denied by default.
       PUBLIC_SEARCH_CORS_ORIGINS: ${PUBLIC_SEARCH_CORS_ORIGINS:-}
       PUBLIC_SEARCH_MAX_CONCURRENT_CRAWLS: ${PUBLIC_SEARCH_MAX_CONCURRENT_CRAWLS:-2}
+      PUBLIC_SEARCH_CRAWLER_USER_AGENT: ${PUBLIC_SEARCH_CRAWLER_USER_AGENT:-AtlasPublicSearchBot/0.1 (+https://atlas.local/bot)}
+      # Optional backup destination inside the persisted /data volume.
+      PUBLIC_SEARCH_BACKUP_DIR: ${PUBLIC_SEARCH_BACKUP_DIR:-/data/backups}
+      # Optional periodic snapshots; set an interval in minutes (15 through 10080) to enable.
+      PUBLIC_SEARCH_BACKUP_INTERVAL_MINUTES: ${PUBLIC_SEARCH_BACKUP_INTERVAL_MINUTES:-}
+      PUBLIC_SEARCH_BACKUP_RETENTION: ${PUBLIC_SEARCH_BACKUP_RETENTION:-7}
       # Optional HTTPS webhook alerts. Both URL and secret are required when enabled.
       PUBLIC_SEARCH_WEBHOOK_URL: ${PUBLIC_SEARCH_WEBHOOK_URL:-}
       PUBLIC_SEARCH_WEBHOOK_SECRET: ${PUBLIC_SEARCH_WEBHOOK_SECRET:-}
